@@ -1,0 +1,11 @@
+.venv-earmarking/
+__pycache__/
+*.pyc
+
+data/raw/
+outputs/
+*.xlsx
+*.csv
+
+.DS_Store
+Thumbs.db

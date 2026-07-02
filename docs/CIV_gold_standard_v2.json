@@ -1,0 +1,266 @@
+{
+  "title": "Gold-standard test set v2 — CIV earmarked taxes",
+  "schema_note": "Aligned to the evidence-table grain. `document_year` = year of the SOURCE DOCUMENT, NOT earmark establishment. Cases keyed by document_id + legal_article + official_name (verbatim) + verbatim_excerpt (the natural keys reconciliation groups on). `role` mirrors evidence-table row_type (source/allocation).",
+  "changes_from_v1": [
+    "Removed ambiguous single `year`; replaced with document_id + document_year.",
+    "Added natural keys (legal_article, official_name verbatim, verbatim_excerpt) and role.",
+    "Added CGI-sourced resolved cases: FER (08), FDFP (09), FSPDF/FNLS-PNLTA 70-30 split (07).",
+    "enabling_reference separated and flagged as cited-not-verified (esp. CGI 2026 consolidated edition).",
+    "Tobacco/FNLS (06) retained as no-invention trap; 70/30 split is a DISTINCT case (07), not a merge."
+  ],
+  "scoring_protocol": {
+    "recall": "fraction of CIV_GOLD_* classified (true|possible)_earmark AND surfacing the required verbatim clause",
+    "allocation_accuracy": "fraction of allocation shares recovered with exact %; per_unit/fixed amounts recovered with correct *_type (not coerced to %)",
+    "precision_negative": "fraction of CIV_NEG_* correctly not_earmark",
+    "no_invention": "ZERO tolerance. Check CIV_GOLD_06 (must NOT emit 'FNLS') and any share deferred-to-arrêté (must be null).",
+    "null_handling": "legitimately-absent fields (rate on 02/03, share on HARD_10, dest_fund on 04/06) MUST be null.",
+    "entity_resolution": "CIV_GOLD_03 vs 04 must be FLAGGED for adjudication, not auto-merged."
+  },
+  "caveats": [
+    "CGI is the 2026 CONSOLIDATED edition: CGI cases establish an earmark is in force as consolidated in 2026, NOT its establishment year. Cited founding texts (1966 for FDFP, etc.) are references, not verified dates.",
+    "CGI two-column OCR interleaves adjacent clauses (see GOLD_07): disentangle which tax carries which key before scoring.",
+    "café-cacao/anacarde (HARD_12) is para-fiscal, deliberately kept OUT of scored gold (contestable)."
+  ],
+  "gold_cases": [
+    {
+      "gold_id": "CIV_GOLD_01",
+      "role": "allocation_set",
+      "must_classify": "true_earmark",
+      "country": "CIV",
+      "document_id": "AF2026",
+      "document_year": 2026,
+      "legal_article": "Article 22",
+      "official_name": "Taxe sur les entreprises de télécommunications, des TIC et les opérations de transfert d'argent",
+      "tax_instrument": "telecom_levy",
+      "rate_value": 5,
+      "rate_type": "ad_valorem_pct",
+      "allocation_key": {
+        "Budget de l'Etat": "90% (general_budget, non-earmarked)",
+        "Fonds d'Appui à la Jeunesse": "3%",
+        "contrôle trafic/lutte fraude télécom": "3%",
+        "Office National des Sports": "2%",
+        "ANSSI": "2%"
+      },
+      "enabling_reference": "CGI art. 1130-1131, amended AF2026 (décret 2024-958 cited for ANSSI share)",
+      "verbatim_excerpt": "La clé de répartition du produit de la taxe est aménagée comme suit : - 90 % au Budget de l'Etat ; - 3 % au Fonds d'Appui à la Jeunesse ; - 3 % au financement des actions de contrôle du trafic et de lutte contre la fraude en matière de télécommunications ; - 2 % à l'Office national des Sports du Ministère en charge des Sports ; - 2 % à l'Agence nationale de la Sécurité des Systèmes d'Information.",
+      "scoring_notes": "PRIMARY UNIT TEST. Must: (1) classify true_earmark; (2) recover all 5 shares with exact %; (3) mark the 90% as general_budget / non-earmarked; (4) youth-fund share = same pair, 5->3 (within-pair change); (5) ANSSI = new pair (destination added). Wrong % = fail on allocation accuracy."
+    },
+    {
+      "gold_id": "CIV_GOLD_02",
+      "role": "allocation",
+      "must_classify": "true_earmark",
+      "country": "CIV",
+      "document_id": "AF2025",
+      "document_year": 2025,
+      "legal_article": "Article 42",
+      "official_name": "Redevance statistique",
+      "tax_instrument": "redevance",
+      "rate_value": null,
+      "rate_type": null,
+      "allocation_key": {
+        "Budget de l'Etat": "90% (general_budget)",
+        "Fonds national de Développement de la Statistique (FNDS)": "10%"
+      },
+      "enabling_reference": "décret du 12 juin 2024 (FNDS creation) — cited in AF2025 exposé, not independently verified",
+      "verbatim_excerpt": "Le produit de la Redevance statistique est réparti comme suit : - 90 % au Budget de l'Etat ; - 10 % au Fonds national de Développement de la Statistique.",
+      "scoring_notes": "Tests source->destination linking (redevance -> FNDS = CAS 23250 in budget). Must surface 10% FNDS share. rate legitimately null -> must NOT invent."
+    },
+    {
+      "gold_id": "CIV_GOLD_03",
+      "role": "allocation",
+      "must_classify": "true_earmark",
+      "country": "CIV",
+      "document_id": "AF2024",
+      "document_year": 2024,
+      "legal_article": null,
+      "official_name": "Taxe et redevance recouvrées par le CIAPOL (Fonds National de l'Environnement)",
+      "tax_instrument": "environmental_tax",
+      "rate_value": null,
+      "rate_type": null,
+      "allocation_key": {
+        "Budget de l'Etat": "30% (general_budget)",
+        "Fonds National de l'Environnement": "50%",
+        "CIAPOL": "20%"
+      },
+      "enabling_reference": null,
+      "verbatim_excerpt": "Les produits de la taxe et de la redevance sont affectés selon la clé de répartition ci-après : - Budget de l'Etat : 30% ; - Fonds National de l'Environnement : 50% ; - CIAPOL : 20%.",
+      "scoring_notes": "Named destination fund; 2024 clause (tests non-2026 recall). RECONCILIATION FLAG vs CIV_GOLD_04: same instrument re-keyed or distinct? Human adjudication — do not auto-merge."
+    },
+    {
+      "gold_id": "CIV_GOLD_04",
+      "role": "allocation",
+      "must_classify": "true_earmark",
+      "country": "CIV",
+      "document_id": "AF2025",
+      "document_year": 2025,
+      "legal_article": "Article 41",
+      "official_name": "Taxe sur les activités polluantes des industries chimiques (CGI art. 1137 bis)",
+      "tax_instrument": "environmental_tax",
+      "rate_value": null,
+      "rate_type": null,
+      "allocation_key": {
+        "Budget de l'Etat": "40% (general_budget)",
+        "Ministère de l'Environnement et du Développement Durable": "40%",
+        "CIAPOL": "20%"
+      },
+      "enabling_reference": "CGI art. 1137 bis, created AF2025",
+      "verbatim_excerpt": "Le produit de ladite taxe est réparti comme suit : - 40 % au Budget de l'Etat ; - 40 % au Ministère de l'Environnement et du Développement Durable ; - 20 % au CIAPOL.",
+      "scoring_notes": "Destination is a MINISTRY not a named fund -> destination_fund null, beneficiary_type=ministry. Tests fund-vs-ministry distinction without forcing a fund. structural_break=1; flag vs GOLD_03."
+    },
+    {
+      "gold_id": "CIV_GOLD_05",
+      "role": "allocation",
+      "must_classify": "true_earmark",
+      "country": "CIV",
+      "document_id": "AF2026",
+      "document_year": 2026,
+      "legal_article": "Article 11",
+      "official_name": "Taxe pour le développement touristique",
+      "tax_instrument": "other",
+      "rate_value": 100,
+      "rate_type": "per_unit_fcfa",
+      "allocation_key": {
+        "Fonds de Développement Touristique": "50%",
+        "collectivité territoriale": "50%"
+      },
+      "enabling_reference": "loi n° 2003-489 du 26 déc. 2003 (cited)",
+      "verbatim_excerpt": "Le produit de la taxe est réparti comme suit : - 50 % au Fonds de Développement touristique ; - 50 % à la collectivité territoriale. La quote-part revenant au Fonds pour le Développement touristique est versée chaque mois sur un compte spécial ouvert dans les livres de la Banque nationale d'Investissement.",
+      "scoring_notes": "Cross-document corroboration: destination matches CAS 23235 in budget. Tests 50/50 split with named fund. rate is per_unit_fcfa (100 FCFA), NOT a percentage."
+    },
+    {
+      "gold_id": "CIV_GOLD_06",
+      "role": "source",
+      "must_classify": "true_earmark",
+      "country": "CIV",
+      "document_id": "AF2025",
+      "document_year": 2025,
+      "legal_article": "Article 19",
+      "official_name": "Taxe de solidarité de lutte contre le SIDA et le tabagisme",
+      "tax_instrument": "excise",
+      "rate_value": 6,
+      "rate_type": "ad_valorem_pct",
+      "allocation_key": null,
+      "enabling_reference": null,
+      "verbatim_excerpt": "...42 % pour les droits d'accises stricto sensu, 5 % en ce qui concerne la taxe spéciale sur le tabac pour le développement du sport et 2 % au titre de la taxe de solidarité de lutte contre le SIDA et le tabagisme. [...] de 2 % à 6 %, le taux de la taxe de solidarité, de lutte contre le SIDA et le tabagisme.",
+      "scoring_notes": "NO-INVENTION TRAP (retained). Tax named & earmarked by its TITLE; but THIS clause (AF2025) does NOT name the destination fund. Correct: classify true_earmark on source side, destination null, ai_confidence=medium. Writing 'FNLS' here = HALLUCINATION. The FNLS/PNLTA split is a DISTINCT clause -> CIV_GOLD_07 (CGI), NOT this one."
+    },
+    {
+      "gold_id": "CIV_GOLD_07",
+      "role": "allocation",
+      "must_classify": "true_earmark",
+      "country": "CIV",
+      "document_id": "CGI2026",
+      "document_year": 2026,
+      "legal_article": "CGI (Fonds Spécial Préservation/Développement Forestier, FSPDF)",
+      "official_name": "Taxe affectée au FSPDF / Fonds National de Lutte contre le SIDA / PNLTA",
+      "tax_instrument": "other",
+      "rate_value": null,
+      "rate_type": null,
+      "allocation_key": {
+        "Fonds National de Lutte contre le SIDA": "70%",
+        "Programme National de Lutte contre le Tabagisme, l'Alcoolisme, la Toxicomanie (PNLTA)": "30%"
+      },
+      "enabling_reference": "CGI 2026 consolidated (founding text not isolated)",
+      "verbatim_excerpt": "Le produit de la taxe est réparti comme suit : - 70 % au Fonds national de Lutte contre le SIDA ; - 30 % au Programme national de Lutte contre le Tabagisme, l'Alcoolisme, la Toxicomanie et les autres addictions.",
+      "scoring_notes": "NEW (CGI-sourced). Explicit 70/30 FNLS-PNLTA split. NOTE the two-column CGI OCR interleaves an adjacent FSPDF forestier clause — disentangle: verify which tax's product carries THIS 70/30 key vs the forestier account. Distinct from GOLD_06 (do not merge). document_year=2026 (consolidated); establishment year unknown."
+    },
+    {
+      "gold_id": "CIV_GOLD_08",
+      "role": "source",
+      "must_classify": "true_earmark",
+      "country": "CIV",
+      "document_id": "CGI2026",
+      "document_year": 2026,
+      "legal_article": "CGI (fiscalité produits pétroliers / FER)",
+      "official_name": "Taxe spécifique unique sur les produits pétroliers (financement du FER)",
+      "tax_instrument": "fuel_levy",
+      "rate_value": null,
+      "rate_type": null,
+      "allocation_key": {
+        "Fonds d'Entretien Routier (FER)": "share not isolated in this excerpt",
+        "Budget de l'Etat": "(also listed)",
+        "secteur Electricité": "(also listed)"
+      },
+      "enabling_reference": "CGI 2026 consolidated; amendment chain cites ord. 2006-234, ord. 2008-381, loi 2013-908, loi 2014-861, loi 2015-840 (cited, not independently verified)",
+      "verbatim_excerpt": "Le Fonds d'Entretien Routier est financé par le produit de la taxe spécifique unique sur les produits pétroliers [...] est affecté : - au Budget de l'Etat ; - au Fonds d'Entretien Routier ; - au Secteur de l'Electricité pour assurer le financement des investissements prioritaires.",
+      "scoring_notes": "RESOLVED via CGI (was unresolved 'low'). Source->destination link (fuel levy -> FER = CAS 23219) now documented. Must: classify true_earmark, identify fuel_levy as source, FER as destination. Shares in a CGI table — verify % against page image before asserting. Amendment chain = candidate year_modified series."
+    },
+    {
+      "gold_id": "CIV_GOLD_09",
+      "role": "source",
+      "must_classify": "true_earmark",
+      "country": "CIV",
+      "document_id": "CGI2026",
+      "document_year": 2026,
+      "legal_article": "CGI Art. 143",
+      "official_name": "Taxe d'apprentissage (au profit du FDFP)",
+      "tax_instrument": "payroll_tax",
+      "rate_value": null,
+      "rate_type": null,
+      "allocation_key": {
+        "Fonds de Développement de la Formation Professionnelle (FDFP)": "assigned (share not in this excerpt)"
+      },
+      "enabling_reference": "Loi n° 66-615 du 23 décembre 1966 (cited in CGI as founding text)",
+      "verbatim_excerpt": "Art. 143 – Il est créé une taxe d'apprentissage perçue au profit du F[onds de Développement de la Formation Professionnelle].",
+      "scoring_notes": "RESOLVED via CGI (was unresolved 'low'). Payroll-based apprenticeship tax -> FDFP (CAS 23220). enabling_reference gives cited founding year 1966 — record as CITED, do not treat as verified establishment date."
+    }
+  ],
+  "hard_recall_cases": [
+    {
+      "gold_id": "CIV_HARD_10",
+      "must_classify": "possible_earmark",
+      "document_id": "AF2026",
+      "document_year": 2026,
+      "official_name": "Redevances pour occupation du domaine public (quote-part Routes)",
+      "legal_article": "Article 14",
+      "verbatim_excerpt": "Une quote-part du produit de ces redevances est affectée au Ministère en charge des Routes. Cette quote-part est déterminée par arrêté conjoint...",
+      "scoring_notes": "Assignment clause present, % deferred to arrêté -> share_value MUST be null (not invented). Clause also in AF2023 -> multi-year recall test."
+    },
+    {
+      "gold_id": "CIV_HARD_11",
+      "must_classify": "possible_earmark",
+      "document_id": "AF2026",
+      "document_year": 2026,
+      "official_name": "Versement obligatoire au Fonds d'Investissement des collectivités territoriales",
+      "legal_article": "Article 18",
+      "verbatim_excerpt": "La quotité de versement obligatoire au Fonds d'Investissement [...] Communes <20 000 hab : 25 % ; [...] >50 000 hab : 15 % ; Régions : 20 %...",
+      "scoring_notes": "Formula-based earmark of LOCAL own-revenue (quotité of revenue, not a tax rate). Tests handling without misclassifying as a tax rate."
+    },
+    {
+      "gold_id": "CIV_HARD_12",
+      "must_classify": "possible_earmark",
+      "document_id": "CGI2026",
+      "document_year": 2026,
+      "official_name": "Prélèvement à l'exportation café-cacao / anacarde (Autorité de Régulation Coton-Anacarde)",
+      "legal_article": "CGI (café-cacao/anacarde)",
+      "verbatim_excerpt": "Le taux de ce prélèvement est de 7 % assis sur [...] l'Autorité de Régulation du Coton et de l'Anacarde créée par décret n° 2002-449 du 16 septembre 2002.",
+      "scoring_notes": "PARA-FISCAL (like FIRCA), not a State tax. Advances the café-cacao/anacarde funds but classification is contestable -> hard case, NOT scored gold. Tests para-fiscal vs State-tax discrimination."
+    }
+  ],
+  "negative_controls": [
+    {
+      "gold_id": "CIV_NEG_01",
+      "must_classify": "not_earmark",
+      "trap": "'crédits ... au profit des Armées' — spending credit allocated TO a beneficiary, no revenue SOURCE.",
+      "why_not": "No source tax. 'au profit de' governs an expenditure credit, not a revenue assignment. Pipe has only the destination end."
+    },
+    {
+      "gold_id": "CIV_NEG_02",
+      "must_classify": "not_earmark",
+      "trap": "'contribution de la Côte d'Ivoire à [organisation internationale]' — membership dues paid OUT.",
+      "why_not": "An outflow, not a levy raised and assigned. No source instrument."
+    },
+    {
+      "gold_id": "CIV_NEG_03",
+      "must_classify": "not_earmark",
+      "trap": "Budget CST table line naming a fund with an amount but NO feeding-tax clause (the destination-only budget-table line).",
+      "why_not": "Destination confirmed, source absent. Fund existing != earmark. The defining false-positive mode. Do NOT promote a CST line to an earmark without an assignment clause. (Amounts belong in the budget-amounts table, not evidence.)"
+    },
+    {
+      "gold_id": "CIV_NEG_04",
+      "must_classify": "not_earmark",
+      "trap": "'taxe aéroportuaire applicable aux embarquements à destination de l'étranger' — 'destination' is geographic.",
+      "why_not": "'destination' = flight destination, not revenue destination. Guards against the beneficiary='étranger' keyword-adjacency failure."
+    }
+  ]
+}
