@@ -1,11 +1,37 @@
-.venv-earmarking/
-__pycache__/
-*.pyc
+.DS_Store
+Thumbs.db
 
-data/raw/
+# ── Secrets & local config (the reason we're here) ──
+config/paths.yml          # real filled-in config; commit paths.example.yml instead
+.env
+*.key
+*.pem
+secrets/
+**/credentials*
+
+# ── Data & outputs (live in Dropbox, never in git) ──
+data/
 outputs/
 *.xlsx
 *.csv
+!docs/**/*.csv            # exception: allow small reference CSVs under docs/ if any
+!docs/**/*.xlsx
 
+# ── Python ──
+__pycache__/
+*.py[cod]
+.venv-earmarking/
+
+.ipynb_checkpoints/
+
+# ── R ──
+.Rproj.user/
+.Rhistory
+.RData
+.Ruserdata
+*.Rproj
+
+# ── OS / editor cruft ──
 .DS_Store
 Thumbs.db
+.vscode/
