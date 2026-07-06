@@ -141,3 +141,15 @@ A recurring pattern: the body that *collects* a levy also *retains a share* of i
 **Discriminating test:** does the retained share pay for *collecting this levy* (→ cost-recovery) or for *what the agency substantively does* (→ proceeds-share/earmark)?
 
 **Worked case (AF2024 Art. 18, EV_0018):** CIAPOL collects the environmental levy AND retains 20%. The 20% funds pollution-control activity (CIAPOL's substantive mandate), not the cost of administering this levy → `proceeds_share`, `is_purpose_restricted = 1`. The payer (an établissement classé) is not transacting for a CIAPOL service in return, so the benefit-principle test points to earmark, not user-charge. CIAPOL recurs (AF2025 chemical-pollution levy, GOLD_04); this sub-rule fixes the classification once rather than per-document. Log the excerpt for each collector-share call so the substantive-mandate-vs-administration judgment is auditable.
+
+---
+
+## 12. [v0.5] Nested / multi-level allocation keys
+
+Some articles split proceeds in two levels: a share goes to a pool, and that pool is itself re-split (AF2026 Art. 40: droit de trafic → 90% DGAM pool → 80/9/1/4/3/3). Capture the hierarchy at extraction (it is in the text, within-document, and lossy if left in prose):
+
+- `share_level = 1` for a share of the gross instrument; `= 2` for a share of a named sub-pool; `3+` if deeper.
+- `share_pool` (verbatim) names the parent pool for `share_level ≥ 2`; null at level 1.
+- **Self-contained descriptor, NOT a row-pointer** — do not assign or reference a synthetic id at extraction (extraction is id-free). Reconciliation matches `share_pool` text to the level-1 parent by natural key.
+- **100%-sum check applies within a (level, pool), never across levels.** A level-2 set sums to 100% of its pool; the pool's own share sits at level 1. Do not mix.
+- `partial_key = 1` still marks a level-2 row as "a fraction of an upstream share" (retained as a redundant flag); `share_level`/`share_pool` supersede the prose-in-notes stopgap used pre-v0.5.
