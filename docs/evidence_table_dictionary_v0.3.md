@@ -1,6 +1,8 @@
-# Evidence Table — Data Dictionary (v0.2)
+# Evidence Table — Data Dictionary (v0.3)
 
-> **Status.** Revised after the AF2025 schema stress-test. Changes from v0.1 are marked **[v0.2]**. Version bumps when a column is added/dropped/retyped.
+> **Status.** v0.3 revised after the AF2024 confirmation run. Changes from v0.1 marked **[v0.2]**; changes from v0.2 marked **[v0.3]**. Version bumps when a column is added/dropped/retyped.
+>
+> **[v0.3] changes:** (1) added `rate_basis` (field 16a), a symmetric mirror of `share_basis`, to distinguish a rate deferred to a future arrêté from a rate simply absent (surfaced by AF2024 Art. 6). (2) added `allocation_nature` (field 18a) to separate a genuine proceeds-split (earmark candidate) from a service fee's cost-components (not an earmark), surfaced by AF2024 Art. 12 (S1). Both are low-risk mechanical additions; spot-check on the first production document rather than via a dedicated confirmation run.
 
 ---
 
@@ -40,8 +42,10 @@ No synthetic ids at extraction. `instrument_id`/`pair_id` blank; assigned in a l
 | 15a | `rate_is_schedule` | bool | yes | source | **[v0.2 NEW]** 1 if the rate is banded/scheduled (by price, substance, star-rating, population band, etc.). Explains why `rate_value` is null. |
 | 15b | `rate_schedule_detail` | string | yes | source | **[v0.2 NEW]** Full verbatim schedule when `rate_is_schedule = 1`. Parsed into a child table later in R; kept out of `rate_value` to preserve its numeric type. |
 | 16 | `rate_type` | enum | yes | source | `{ad_valorem_pct, per_unit_fcfa, fixed_fcfa}`. |
+| 16a | `rate_basis` | enum | yes | source | **[v0.3 NEW]** `{stated, banded, deferred_arrete, not_applicable}`. Symmetric to `share_basis` (20a). Disambiguates why `rate_value` is null: `stated` (scalar present); `banded` (schedule — pairs with `rate_is_schedule = 1` and `rate_schedule_detail`); `deferred_arrete` (rate exists in law but its value is set by a future arrêté, e.g. AF2024 Art. 6 tobacco stamp); `not_applicable` (no rate concept for this instrument). Closes the AF2024 gap where a deferred rate and an absent rate were both bare nulls. |
 | 17 | `destination` | string (verbatim) | yes | allocation | Recipient, verbatim. Null on `source`. |
-| 18 | `beneficiary_type` | enum | yes | allocation | `{fund, agency, ministry, collectivite_territoriale, sector, program, supranational, general_budget}`. **[v0.2]** `program` covers functional-purpose destinations (a named activity/purpose, not a proper-noun body) — ratified as a genuine assignment (see decision rules). `general_budget` = non-earmarked residual (kept for 100% check, excluded from earmark analysis). |
+| 18 | `beneficiary_type` | enum | yes | allocation | `{fund, agency, ministry, collectivite_territoriale, sector, program, supranational, general_budget}`. `program` covers functional-purpose destinations (a named activity/purpose, not a proper-noun body). `general_budget` = non-earmarked residual (kept for 100% check, excluded from earmark analysis). |
+| 18a | `allocation_nature` | enum | yes | allocation | **[v0.3 NEW]** `{proceeds_share, cost_recovery_component}`. Distinguishes a genuine division of *collected proceeds* to a recipient (`proceeds_share` — a real earmark candidate, e.g. Art. 18 env. tax → FNE 50%) from a *component of the price of a service the payer is consuming* (`cost_recovery_component` — NOT an earmark, e.g. Art. 12 registration duty split to the processing office / registration officers). Benefit-principle test: does the share fund the *service the payer is transacting for* (cost-recovery) or something the payer is *not a party to* (earmark)? `cost_recovery_component` rows are recorded for completeness, excluded from the earmark subset, and **never enter the allocation-share panel** (so a re-priced service fee cannot masquerade as an earmark-reform event). Soft boundary case (log with excerpt): general administrative cost-recovery not tied to the specific taxed transaction — resolve toward `cost_recovery_component`. |
 | 19 | `share_value` | numeric | yes | allocation | Scalar. Null when destination named but no share stated. |
 | 19a | `share_is_schedule` | bool | yes | allocation | **[v0.2 NEW]** 1 if the share/quotité is banded (e.g. 15–25% by population band). Explains null `share_value`. |
 | 19b | `share_schedule_detail` | string | yes | allocation | **[v0.2 NEW]** Full verbatim schedule when `share_is_schedule = 1`. |

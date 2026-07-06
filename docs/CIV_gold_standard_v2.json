@@ -72,7 +72,7 @@
       "country": "CIV",
       "document_id": "AF2024",
       "document_year": 2024,
-      "legal_article": null,
+      "legal_article": "Article 18 (creates CGI art. 1152) — TO VERIFY against AF2024 source page",
       "official_name": "Taxe et redevance recouvrées par le CIAPOL (Fonds National de l'Environnement)",
       "tax_instrument": "environmental_tax",
       "rate_value": null,
@@ -84,7 +84,7 @@
       },
       "enabling_reference": null,
       "verbatim_excerpt": "Les produits de la taxe et de la redevance sont affectés selon la clé de répartition ci-après : - Budget de l'Etat : 30% ; - Fonds National de l'Environnement : 50% ; - CIAPOL : 20%.",
-      "scoring_notes": "Named destination fund; 2024 clause (tests non-2026 recall). RECONCILIATION FLAG vs CIV_GOLD_04: same instrument re-keyed or distinct? Human adjudication — do not auto-merge."
+      "scoring_notes": "Named destination fund; 2024 clause (tests non-2026 recall). RECONCILIATION FLAG vs CIV_GOLD_04: same instrument re-keyed or distinct? Human adjudication — do not auto-merge. [v2.1 correction] legal_article was null in v2; AF2024 extraction reports 'Article 18 / CGI art. 1152' — the article number IS present in the enacting text, so a correct extraction populating it is natural-key ENRICHMENT, not over-emission. Do NOT penalize a populated legal_article here. Value pending source-page verification."
     },
     {
       "gold_id": "CIV_GOLD_04",
@@ -262,5 +262,8 @@
       "trap": "'taxe aéroportuaire applicable aux embarquements à destination de l'étranger' — 'destination' is geographic.",
       "why_not": "'destination' = flight destination, not revenue destination. Guards against the beneficiary='étranger' keyword-adjacency failure."
     }
+  ],
+  "corrections_log": [
+    "v2.1: GOLD_03 legal_article null->'Article 18 / CGI art. 1152' (to verify). Rationale: the article number exists in the AF2024 enacting text; scoring must not flag a populated legal_article as over-emission. Distinguish from GOLD_06 where a fund name is ABSENT from the text (writing it = invention)."
   ]
 }

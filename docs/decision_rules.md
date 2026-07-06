@@ -81,14 +81,18 @@ Coercing a fixed-amount tax/share into a percentage column would fabricate or lo
 
 ---
 
-## 7. [v0.2] `assignment_type` criterion (scope gate)
+## 7. [v0.2] `assignment_type` criterion (scope recorded, filtered in analysis)
 
-The dividing line between an **earmark** and **tax-sharing/devolution** is **purpose-restriction of use**, NOT the identity of the recipient. An earmark restricts the *use* of proceeds to a specific purpose; general tax-sharing transfers *unrestricted* revenue to a tier of government.
+**Extract broad, filter later.** Every revenue instrument assigned to a *specific named recipient* (fund, organism, ministry, tier of government, programme) is EXTRACTED AND RECORDED, regardless of whether it is an earmark or tax-sharing. The earmark-vs-not distinction is a recorded *field* (`is_purpose_restricted` + `assignment_type`), applied as an **analysis-time filter**, never as an extraction-time exclusion. Rationale: making inclusion a recorded reversible variable preserves the full population (so earmarking can later be compared against tax-sharing as an alternative DRM mechanism) and makes the boundary an explicit, auditable analytical choice rather than a silent extraction judgment.
 
-- `is_purpose_restricted = 1` → in scope. A State tax → a purpose-restricted fund/organism/programme (incl. a collectivité's *earmarked* fonds d'investissement) qualifies, regardless of whether the recipient is national or sub-national. Sub-classify in `assignment_type` (`earmark_functional`, `hybrid_devolved_earmark`, `equalization_transfer`, `community_levy_external`, `tax_sharing_specific`).
-- `is_purpose_restricted = 0` → out of scope but recorded. A tax → a tier's *general/unrestricted* budget (Communes, Régions, État) is ordinary fiscal decentralization, indistinguishable from general devolution → `assignment_type = tax_sharing_general`. Kept for completeness and manager review, excluded from earmark analysis.
+**Dividing criterion — purpose-restriction of use, NOT recipient identity.** An earmark restricts the *use* of proceeds to a specific purpose; tax-sharing transfers *unrestricted* revenue to a general-purpose recipient.
 
-**OPEN ITEM — manager ratification.** Whether to retain in-scope *specific* tax-sharing (e.g. a shared tax whose sub-national share is legally tied to a named restricted use) as a distinct earmark-adjacent category, vs. excluding all tax-sharing, is to be decided at the weekly meeting. The scope expansion (from "earmarks" to "revenue instruments with a specific legal destination") must be recorded in the assumptions register once ratified.
+- `is_purpose_restricted = 1` → earmark subset. A tax → a purpose-restricted fund/organism/programme (incl. a collectivité's *earmarked* fonds d'investissement) qualifies, national or sub-national. Sub-classify: `earmark_functional`, `hybrid_devolved_earmark`, `equalization_transfer`, `community_levy_external`, `tax_sharing_specific`.
+- `is_purpose_restricted = 0` → recorded, outside the earmark subset. A tax → a tier's *general/unrestricted* budget (impôt foncier → Communes' general budget) is ordinary fiscal decentralization → `assignment_type = tax_sharing_general`. **Still extracted and recorded**, filtered out only in earmark-specific analysis.
+
+**Only** the pure general-State-budget residual share (e.g. the 90% in a 90/10 telecom key) is treated as the non-earmarked accounting residual via `beneficiary_type = general_budget` (kept for the 100% sum-check, excluded from earmark analysis).
+
+**Scope-expansion consequence (record in assumptions register).** Including specific-recipient tax-sharing widens the paper's object from "earmarked taxes" to "revenue instruments with a specific legal destination, of which earmarks are a subset." This is defensible and richer (permits earmark-vs-decentralization contrasts) but: (i) every aggregate statistic must state its `assignment_type` filter explicitly; (ii) fiscal-decentralization cases carry distinct confounders (political structure, administrative legacy) and must not be silently pooled with earmarks in regression; (iii) the paper owes an explicit sentence distinguishing earmarking from tax-sharing/decentralization. **OPEN ITEM — manager ratification** of which categories fall inside the earmark-adjacent boundary.
 
 ## 8. [v0.2] `program` destination precedent (ratified)
 
@@ -110,3 +114,30 @@ A **functional-purpose destination** — a named activity or purpose rather than
 The operational reconciliation procedure (how each provisional/lineage field is finalized, how entity resolution is executed and adjudicated, how the panel is derived) is **deliberately not specified yet** — it should be drafted against the *real* lineage signals and provisional breaks the corpus produces, not in the abstract (avoids over-engineering for cases that don't occur). To be specified once annexes + CGI are extracted.
 
 **Non-negotiable now (fixed as principle, details deferred):** reconciliation must produce an **excerpt-justified decision log** — every `instrument_id`/`pair_id` assignment, every confirmed/rejected structural break, and every entity-resolution adjudication recorded with the verbatim excerpts that justified it. Rationale: reconciliation errors propagate directly into treatment timing (a mis-dated break = a mis-timed treatment in any event study; a wrong merge collapses two treated units). The relational layer must therefore be as auditable and reproducible as the evidence layer — the decision log is the reconciliation-stage analogue of the gold standard.
+
+---
+
+## 11. [v0.3] Cost-recovery / user-charge vs. earmark (S1 ruling — DECIDED)
+
+**Ruling (researcher's decision, benefit-principle basis).** A statutory split of a payment is NOT an earmark when it is the *price of a service the payer is consuming*, decomposed into its cost components (the administering office's costs, the processing officers' remuneration). It IS an earmark candidate when proceeds are directed to a party the payer is *not transacting with* (a fund, sector, or programme external to the service paid for).
+
+**Discriminating test (benefit principle):** does the share fund the *specific service the payer is receiving* (→ `cost_recovery_component`, not an earmark) or something the payer is *not a party to* (→ `proceeds_share`, earmark candidate)?
+- Example — NOT an earmark: AF2024 Art. 12, property-registration duty split to "frais généraux du service" (0.4%) and "conservateurs de la propriété foncière" (0.2%) — cost-recovery for the registration service the payer is buying.
+- Example — earmark: AF2024 Art. 18, environmental levy split 30/50/20 to Budget / Fonds National de l'Environnement / CIAPOL — proceeds directed to parties external to any service the payer consumes.
+
+**Implementation:** `allocation_nature ∈ {proceeds_share, cost_recovery_component}` (dictionary 18a). `cost_recovery_component` rows are recorded (completeness), excluded from the earmark subset, and never enter the allocation-share panel — so re-pricing a service fee cannot register as an earmark-reform treatment event.
+
+**Soft boundary (log case-by-case with excerpt):** *general* administrative cost-recovery not tied to the specific taxed transaction (e.g. a levy funding the revenue authority's general operations) sits between a user charge and an earmark-to-the-agency. Resolve toward `cost_recovery_component`, but log the excerpt so the call is auditable rather than assumed uniform.
+
+**Literature basis (for the methods section, when written):** the user-charge vs. earmarked-tax distinction is the benefit-principle boundary in the public-finance literature (Bird on user charges; Buchanan on earmarking; the "Charging for Government" user-charge literature). This is a *definitional* choice about instrument type, ratified as the researcher's decision; managers informed, not blocking.
+
+### §11.1 [v0.4] Collector-share sub-rule (collector-that-is-also-beneficiary)
+
+A recurring pattern: the body that *collects* a levy also *retains a share* of it (revenue authorities, sector regulators, marketing boards, CIAPOL). The §11 default ("resolve general administrative cost-recovery toward `cost_recovery_component`") must be qualified, because a collector's retained share can be either thing depending on what it funds:
+
+- **`cost_recovery_component`** — the retained share funds the *administration of that specific levy* (the cost of collecting/processing it). This is a genuine user-charge-like cost-recovery cut; not an earmark.
+- **`proceeds_share`** — the retained share funds the collector's *substantive mandate*, i.e. activity external to administering this levy. This is a genuine earmark to the agency.
+
+**Discriminating test:** does the retained share pay for *collecting this levy* (→ cost-recovery) or for *what the agency substantively does* (→ proceeds-share/earmark)?
+
+**Worked case (AF2024 Art. 18, EV_0018):** CIAPOL collects the environmental levy AND retains 20%. The 20% funds pollution-control activity (CIAPOL's substantive mandate), not the cost of administering this levy → `proceeds_share`, `is_purpose_restricted = 1`. The payer (an établissement classé) is not transacting for a CIAPOL service in return, so the benefit-principle test points to earmark, not user-charge. CIAPOL recurs (AF2025 chemical-pollution levy, GOLD_04); this sub-rule fixes the classification once rather than per-document. Log the excerpt for each collector-share call so the substantive-mandate-vs-administration judgment is auditable.

@@ -46,4 +46,27 @@
 
 ---
 
+### A10. Scope: recorded population is broader than "earmarks" (extract-broad, filter-later)
+- **Choice.** The evidence table records **every** revenue instrument assigned to a *specific named recipient* (fund, organism, ministry, tier, programme), not only purpose-restricted earmarks. The earmark-vs-tax-sharing distinction is a recorded field (`is_purpose_restricted`/`assignment_type`) applied as an analysis-time filter.
+- **Load-bearing because.** It widens the paper's object from "earmarked taxes" to "revenue instruments with a specific legal destination, of which earmarks are a subset." This preserves the full population (enabling earmark-vs-tax-sharing/decentralization contrasts) and makes inclusion a reversible, auditable choice rather than a silent extraction judgment.
+- **Constrains.** (i) Every aggregate statistic ("X% of revenue earmarked") is meaningless without stating its `assignment_type` filter. (ii) Fiscal-decentralization cases carry distinct confounders (political structure, ethnic geography, colonial administrative legacy) and must not be pooled with earmarks in a single regression without accounting for the treatment difference. (iii) The paper owes an explicit definitional sentence separating earmarking from tax-sharing/decentralization, and must anticipate the referee question "why is impôt foncier → Communes in an earmarking dataset?" (answer: recorded, flagged `tax_sharing_general`, filtered out of earmark analysis).
+
+### A11. Cost-recovery / user-charge components are not earmarks (S1 — DECIDED)
+- **Choice.** A statutory split of a payment that prices the *service the payer is consuming* (administrative cost-recovery, processing-officer remuneration) is classified `allocation_nature = cost_recovery_component`, recorded but excluded from the earmark subset and from the allocation-share panel. Proceeds directed to a party external to the service (fund, sector, programme) are `proceeds_share` (earmark candidate).
+- **Load-bearing because.** Without the distinction, service-fee cost-splits inflate the earmark count, mix rate-decomposition percentages with proceeds-share percentages, and — most seriously — a re-priced service fee would register as a spurious allocation-share change, injecting systematic measurement error into the treatment variable (earmark-share reforms) that underpins the identification strategy.
+- **Basis.** Benefit-principle boundary between a user charge and an earmarked tax (Bird; Buchanan; Charging-for-Government literature). Researcher's decision; managers informed.
+- **Soft boundary flagged.** General administrative cost-recovery not tied to the specific taxed transaction is logged case-by-case, resolved toward `cost_recovery_component`.
+
+---
+
+## Open items — pending manager ratification (weekly meeting)
+
+1. **`assignment_type` boundary (A10).** Which categories count as earmark-adjacent vs. excluded: does *specific* tax-sharing (a shared tax whose sub-national share is legally tied to a named restricted use) belong in the earmark subset, or only pure functional earmarks? The data records all; the analytical boundary is unratified.
+2. **`program`-destination precedent (decision rules §8).** Functional-purpose destinations (a named activity, not a proper-noun body) provisionally count as genuine assignments — confirm.
+3. **Scope-expansion framing (A10).** Ratify that the paper's object is "specific-destination revenue instruments, earmarks as a subset," with the definitional distinction stated up front.
+4. **Reconciliation protocol (decision rules §10).** Deferred artifact — design after extraction; the excerpt-justified decision-log requirement is fixed now.
+
+---
+
+
 **Standing caution.** SSA-specific conjectures (acceptability channel, fungibility channel, institutional-quality conditioning, sign-ambiguity) are **educated guesses** until SSA data/literature support them — present as such, not as hypotheses with priors or as findings.
