@@ -57,16 +57,3 @@
 - **Basis.** Benefit-principle boundary between a user charge and an earmarked tax (Bird; Buchanan; Charging-for-Government literature). Researcher's decision; managers informed.
 - **Soft boundary flagged.** General administrative cost-recovery not tied to the specific taxed transaction is logged case-by-case, resolved toward `cost_recovery_component`.
 
----
-
-## Open items — pending manager ratification (weekly meeting)
-
-1. **`assignment_type` boundary (A10).** Which categories count as earmark-adjacent vs. excluded: does *specific* tax-sharing (a shared tax whose sub-national share is legally tied to a named restricted use) belong in the earmark subset, or only pure functional earmarks? The data records all; the analytical boundary is unratified.
-2. **`program`-destination precedent (decision rules §8).** Functional-purpose destinations (a named activity, not a proper-noun body) provisionally count as genuine assignments — confirm.
-3. **Scope-expansion framing (A10).** Ratify that the paper's object is "specific-destination revenue instruments, earmarks as a subset," with the definitional distinction stated up front.
-4. **Reconciliation protocol (decision rules §10).** Deferred artifact — design after extraction; the excerpt-justified decision-log requirement is fixed now.
-
----
-
-
-**Standing caution.** SSA-specific conjectures (acceptability channel, fungibility channel, institutional-quality conditioning, sign-ambiguity) are **educated guesses** until SSA data/literature support them — present as such, not as hypotheses with priors or as findings.

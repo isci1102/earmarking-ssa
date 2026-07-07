@@ -1,5 +1,7 @@
 # Processing Plan — CIV earmark extraction
 
+> **⚠️ DEPRECATED (superseded).** This was the CIV-pilot planning document. Its durable content now lives in the governing docs: per-document-type handling → RETRIEVAL ADAPTER (A4/A5); three-layer fund-agnostic retrieval → ADAPTER A2/A4; natural-key requirements → CORE C6. The fixed document list and batched extraction order below are CIV-pilot-specific and NOT part of the reusable methodology. Retained for audit trail only — do not treat as governing.
+
 **Principle.** The file on disk is the memory, not the chat. Each document is processed in a focused, bounded pass and its evidence written out immediately, so no single analysis step holds more than one or two documents at once. Accumulated knowledge lives in the growing evidence table, not in conversational context. This keeps every pass small enough to stay accurate across ~26 documents and possibly multiple sessions.
 
 ---
