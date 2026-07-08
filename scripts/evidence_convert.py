@@ -48,6 +48,13 @@ SHEET_MAP = [
 ]
 JSON_KEYS = [k for (_, k, _) in SHEET_MAP]
 
+# ---- LOCATE output map (dictionary section 9). Two sheets / two keys. ----------
+LOCATE_MAP = [
+    ("PASSAGE_INVENTORY",          "passage_inventory"),
+    ("SWEEP_COVERAGE_CERTIFICATE", "sweep_coverage_certificate"),
+]
+LOCATE_KEYS = [k for (_, k) in LOCATE_MAP]
+
 # RUN_META section markers -> json sub-object key. A marker row has value=None and
 # a "--- NAME ---" field. Rows before the first marker are the parameters group.
 META_SECTIONS = {
@@ -215,6 +222,63 @@ def obj_to_xlsx(doc: dict, path: Path, evidence_header: list | None = None):
     wb.save(path)
 
 
+# ================================================================= LOCATE (§9)
+def locate_xlsx_to_obj(path: Path) -> dict:
+    """LOCATE two-sheet workbook -> {passage_inventory:[...], sweep_coverage_certificate:[...]}."""
+    wb = openpyxl.load_workbook(path, data_only=True)
+    present = set(wb.sheetnames)
+    out = {}
+    for sheet, key in LOCATE_MAP:
+        out[key] = _rows_sheet_to_list(wb[sheet]) if sheet in present else []
+    return out
+
+
+def obj_to_locate_xlsx(doc: dict, path: Path,
+                       inv_header: list | None = None,
+                       cert_header: list | None = None):
+    wb = openpyxl.Workbook()
+    wb.remove(wb.active)
+    headers = {"passage_inventory": inv_header, "sweep_coverage_certificate": cert_header}
+    for sheet, key in LOCATE_MAP:
+        ws = wb.create_sheet(sheet)
+        _write_rows_sheet(ws, doc.get(key) or [], headers.get(key))
+    wb.save(path)
+
+
+def validate_locate(doc: dict) -> list[str]:
+    problems = []
+    for k in LOCATE_KEYS:
+        if k not in doc:
+            problems.append(f"missing required key: {k}")
+        elif not isinstance(doc[k], list):
+            problems.append(f"{k} must be an array")
+    # prelim_flag domain check (non-binding hint, but the enum is fixed)
+    allowed = {"earmark_candidate", "tax_sharing_candidate",
+               "cost_recovery_candidate", "ambiguous"}
+    for i, r in enumerate(doc.get("passage_inventory") or []):
+        pf = r.get("prelim_flag")
+        if pf is not None and pf not in allowed:
+            problems.append(f"passage_inventory[{i}].prelim_flag='{pf}' not in {sorted(allowed)}")
+    return problems
+
+
+def locate_roundtrip_ok(xlsx_path: Path) -> tuple[bool, list[str]]:
+    wb = openpyxl.load_workbook(xlsx_path, read_only=True)
+    heads = {}
+    for sheet, key in LOCATE_MAP:
+        ws = wb[sheet]
+        hdr = [c.value for c in next(ws.iter_rows(min_row=1, max_row=1))]
+        heads[key] = [h for h in hdr if h is not None]
+    a = locate_xlsx_to_obj(xlsx_path)
+    tmp = xlsx_path.with_suffix(".lroundtrip.xlsx")
+    obj_to_locate_xlsx(a, tmp, inv_header=heads["passage_inventory"],
+                       cert_header=heads["sweep_coverage_certificate"])
+    b = locate_xlsx_to_obj(tmp)
+    tmp.unlink(missing_ok=True)
+    diffs = [f"round-trip mismatch on '{k}'" for k in LOCATE_KEYS if a.get(k) != b.get(k)]
+    return (len(diffs) == 0, diffs)
+
+
 # ================================================================= VALIDATION
 def validate(doc: dict) -> list[str]:
     """Section-8 conformance + the reconciliation invariant. Returns a list of
@@ -294,7 +358,36 @@ def main():
     p4 = sub.add_parser("roundtrip", help="prove xlsx->json->xlsx reproduces the original")
     p4.add_argument("xlsx")
 
+    # --- LOCATE (§9) ---
+    l1 = sub.add_parser("locate-to-json", help="LOCATE workbook -> json object (§9)")
+    l1.add_argument("xlsx"); l1.add_argument("out", nargs="?")
+
+    l2 = sub.add_parser("locate-validate", help="§9 conformance (keys + prelim_flag domain)")
+    l2.add_argument("path", help="xlsx or json")
+
+    l3 = sub.add_parser("locate-roundtrip", help="prove LOCATE xlsx<->json equivalence")
+    l3.add_argument("xlsx")
+
     a = p.parse_args()
+
+    if a.cmd == "locate-to-json":
+        doc = locate_xlsx_to_obj(Path(a.xlsx))
+        out = Path(a.out) if a.out else Path(a.xlsx).with_suffix(".json")
+        out.write_text(json.dumps(doc, ensure_ascii=False, indent=2))
+        print(f"wrote {out}"); return
+    if a.cmd == "locate-validate":
+        path = Path(a.path)
+        doc = locate_xlsx_to_obj(path) if path.suffix == ".xlsx" else json.loads(path.read_text())
+        problems = validate_locate(doc)
+        if problems:
+            print("NON-CONFORMANT:"); [print("  -", x) for x in problems]; sys.exit(1)
+        print("CONFORMANT (§9 LOCATE contract)"); return
+    if a.cmd == "locate-roundtrip":
+        ok, diffs = locate_roundtrip_ok(Path(a.xlsx))
+        if ok: print("ROUND-TRIP OK — LOCATE xlsx and json are equivalent renderings")
+        else:
+            print("ROUND-TRIP FAILED:"); [print("  -", d) for d in diffs]; sys.exit(1)
+        return
 
     if a.cmd == "to-json":
         doc = xlsx_to_obj(Path(a.xlsx))

@@ -22,7 +22,7 @@
 - structural_vector: `{language: [fr|en], column_layout: [single|double|detect], length_class: [short|long], earmark_density: [concentrated|sparse|detect], content_form: [prose_clauses|table|mixed], numbering: [article|section|livre+article|line-item]}`
 - gold_standard_file: `[CIV_gold_standard_v2]`
 - section_scope: `[whole document | Livre III | Articles 140–200 | …]`  ← for EXTRACT, the bounded slice fed this run; for LOCATE, normally "whole document"
-- output_format: `[xlsx | csv | json_rows]`  ← [REV-6b] chat workflow default `xlsx`; API workflow uses `json_rows`. Column set and order are the v0.5 dictionary regardless of format — the format is transport, not schema.
+- output_format: `[xlsx | json]`  ← [REV-6b] chat workflow default `xlsx` (nine-sheet workbook); API workflow uses `json` (one object, nine keys). Both are renderings of ONE canonical structure defined in **dictionary §8 (serialization contract)** — same column evidence set, same eight C9 audits, in both. The format is transport, not schema; a `json` output missing any audit key is malformed exactly as a workbook missing an audit sheet would be.
 - file(s): attached
 
 **Governing method (read and apply from the project files):** CORE extraction methodology (C1–C10 — invariant method, grain, id-free discipline, audits), RETRIEVAL ADAPTER (A0–A7 — instantiate with the structural_vector), evidence dictionary v0.5 (schema), decision rules (§1–§12), assumptions register, the country's coverage map and gold standard. Do not reopen settled decisions.
@@ -53,6 +53,8 @@ Sweep the ENTIRE `section_scope` using the fund-agnostic lexicon. **Optimise for
 
 **Output 2 — SWEEP-COVERAGE CERTIFICATE:** per division (livre/chapter/section-range), state the article/section range examined and certify it was swept in full, so a division with zero flagged passages is a CERTIFIED absence, not an unswept gap. This is the proof the whole `section_scope` was scanned front to back — the guard against silent shallowing. [REV-4] The certificate must enumerate the division ranges CONTIGUOUSLY from the document's first division to its last — any numbering gap between certified ranges is itself a reportable finding (either the document skips those numbers, stated, or the sweep did — stop and re-sweep).
 
+**Render Output 1 + Output 2 per `output_format` (dictionary §9): `xlsx` = two-sheet workbook (`PASSAGE_INVENTORY`, `SWEEP_COVERAGE_CERTIFICATE`); `json` = one object with two keys (`passage_inventory`, `sweep_coverage_certificate`).** [REV-8] Emit this as a FILE, not only an inline table — it is the interface to the EXTRACT pass and, in the API, the JSON contract the orchestrator filters to `section_scope` and passes to each extract call. Both components must be present in either rendering; the two are interconvertible without loss (§9). This is a SEPARATE output unit from the EXTRACT nine-key evidence object (§8); LOCATE populates no schema field.
+
 Do not extract, classify definitively, or summarise the document. Locate and inventory only.
 
 ═══════════════════════════════════════════
@@ -67,7 +69,7 @@ Apply CORE C1–C9 and all v0.5 mechanics: id-free (natural keys + verbatim exce
 
 **[REV-3] Batch-boundary rule (multi-batch documents only).** When `section_scope` is a slice of a larger document, an allocation key that fails the 100%-sum check at the scope boundary is NOT a schema-stress event and must NOT trigger a STOP: set `partial_key = 1`, note "remainder outside section_scope (suspected [division])", and continue. Cross-batch key joins are reconciliation's job, not the batch's. Reserve SCHEMA-STRESS for genuinely new structural patterns, not for scope-truncation artifacts.
 
-**Output — per `output_format` (v0.5 column order, plain formatting, no decorative fills) + the CORE C9 audit set inline:**
+**Output — the evidence set + the CORE C9 audit set, rendered per `output_format` (dictionary §8): `xlsx` = nine-sheet workbook; `json` = one object with nine keys. Same content either way (v0.5 column order, plain formatting, no decorative fills); the eight audits below are carried in BOTH renderings, never dropped when emitting `json`.** The `locate_reconciliation` audit (7) is emitted in `json` as an object with first-class `{N, M, K, J}` scalars so the invariant is machine-checkable (dictionary §8).
 (1) COVERAGE REPORT — every division in `section_scope` accounted for (rows produced OR "checked — no earmark clause"); if working from a LOCATE inventory, every inventory entry either extracted or dismissed with reason.
 (2) RECALL AUDIT — every assignment-grammar hit in `section_scope` captured or dismissed with a one-line reason.
 (3) FIELD-EXERCISE NOTE — flag every judgment-sensitive call (§11.1 collector-share, cross_reference, banded, `is_purpose_restricted = 0`, `share_level = 2`) for sign-off.

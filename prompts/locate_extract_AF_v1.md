@@ -1,12 +1,12 @@
 **RUN PARAMETERS — the only values you edit per run**
 - country: `[CIV]`
-- document_id: `[AF2026]`
+- document_id: `[AF2025]`
 - document_type: `[annexe_fiscale]` 
-- document_year: `[2026]`
-- structural_vector: `{language: [fr], column_layout: [single], length_class: [long], earmark_density: [concentrated], content_form: [mixed], numbering: [article|section|livre+article|line-item]}`
+- document_year: `[2025]`
+- structural_vector: `{language: [fr], column_layout: [single], length_class: [long], earmark_density: [concentrated], content_form: [mixed], numbering: [article]}`
 - gold_standard_file: `[CIV_gold_standard_v2]`
-- section_scope: `[whole document ]` 
-- output_format: `[xlsx ]`
+- section_scope: `[whole document]` 
+- output_format: `[json]`
 - file(s): attached
 
 **Governing method (read and apply from the project files):** CORE extraction methodology (C1–C10 — invariant method, grain, id-free discipline, audits), RETRIEVAL ADAPTER (A0–A7 — instantiate with the structural_vector), evidence dictionary v0.5 (schema), decision rules (§1–§12), assumptions register, the country's coverage map and gold standard. Do not reopen settled decisions.
@@ -37,6 +37,8 @@ Sweep the ENTIRE `section_scope` using the fund-agnostic lexicon. **Optimise for
 
 **Output 2 — SWEEP-COVERAGE CERTIFICATE:** per division (livre/chapter/section-range), state the article/section range examined and certify it was swept in full, so a division with zero flagged passages is a CERTIFIED absence, not an unswept gap. This is the proof the whole `section_scope` was scanned front to back — the guard against silent shallowing. The certificate must enumerate the division ranges CONTIGUOUSLY from the document's first division to its last — any numbering gap between certified ranges is itself a reportable finding (either the document skips those numbers, stated, or the sweep did — stop and re-sweep).
 
+**Render Output 1 + Output 2 per `output_format` (dictionary §9): `xlsx` = two-sheet workbook (`PASSAGE_INVENTORY`, `SWEEP_COVERAGE_CERTIFICATE`); `json` = one object with two keys (`passage_inventory`, `sweep_coverage_certificate`).** Emit this as a FILE, not an inline table — it is the interface to the EXTRACT pass and, in the API, the JSON contract the orchestrator filters to `section_scope` and passes to each extract call. Both components must be present in either rendering; the two are interconvertible without loss (§9). This is a SEPARATE output unit from the EXTRACT nine-key evidence object (§8); LOCATE populates no schema field.
+
 Do not extract, classify definitively, or summarise the document. Locate and inventory only.
 
 ═══════════════════════════════════════════
@@ -51,7 +53,7 @@ Apply CORE C1–C9 and all v0.5 mechanics: id-free (natural keys + verbatim exce
 
 **Batch-boundary rule (multi-batch documents only).** When `section_scope` is a slice of a larger document, an allocation key that fails the 100%-sum check at the scope boundary is NOT a schema-stress event and must NOT trigger a STOP: set `partial_key = 1`, note "remainder outside section_scope (suspected [division])", and continue. Cross-batch key joins are reconciliation's job, not the batch's. Reserve SCHEMA-STRESS for genuinely new structural patterns, not for scope-truncation artifacts.
 
-**Output — per `output_format` (v0.5 column order, plain formatting, no decorative fills) + the CORE C9 audit set inline:**
+**Output — the evidence set + the CORE C9 audit set, rendered per `output_format` (dictionary §8): `xlsx` = nine-sheet workbook; `json` = one object with nine keys. Same content either way (v0.5 column order, plain formatting, no decorative fills); the eight audits below are carried in BOTH renderings, never dropped when emitting `json`.** The `locate_reconciliation` audit (7) is emitted in `json` as an object with first-class `{N, M, K, J}` scalars so the invariant is machine-checkable (dictionary §8).
 (1) COVERAGE REPORT — every division in `section_scope` accounted for (rows produced OR "checked — no earmark clause"); if working from a LOCATE inventory, every inventory entry either extracted or dismissed with reason.
 (2) RECALL AUDIT — every assignment-grammar hit in `section_scope` captured or dismissed with a one-line reason.
 (3) FIELD-EXERCISE NOTE — flag every judgment-sensitive call (§11.1 collector-share, cross_reference, banded, `is_purpose_restricted = 0`, `share_level = 2`) for sign-off.
