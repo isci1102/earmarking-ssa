@@ -10,7 +10,7 @@ this runs downstream, on demand (chat) or as one orchestration step per document
 (API), to convert or to validate — never per prompt-run.
 
 Design choices (methodological, not stylistic):
-- The 44 evidence columns are read from the workbook header, not hardcoded, so
+- The evidence columns are read from the workbook header, not hardcoded, so
   the converter tracks the actual emitted schema and a column drift surfaces as a
   conformance failure rather than being silently masked by a stale constant.
 - RUN_META is a flat field/value sheet with "--- SECTION ---" marker rows
