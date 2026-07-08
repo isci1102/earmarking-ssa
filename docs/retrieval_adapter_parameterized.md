@@ -16,7 +16,7 @@ Before retrieval, detect/declare and REPORT these parameters for the document. T
 | `content_form` | prose_clauses / table / mixed | clause extraction vs structural-table extraction (A5) |
 | `numbering` | article / section / livre+article / line-item / none | the coverage-report unit (C9) |
 
-Report the parameter vector in one line, then proceed. A document type is just a typical vector, not a special case: annexe fiscale = {fr, single, short, concentrated, prose, article}; CIV CGI = {fr, double, long, sparse, prose, livre+article}; loi de finances CST = {fr, single/table, long, mixed, table+prose, line-item}; Ghana Finance Act = {en, single, medium, concentrated, prose, section}.
+Report the parameter vector in one line, then proceed. A document type is just a typical vector, not a special case: CIV annexe fiscale = {fr, single, short, concentrated, prose, article}; CIV CGI = {fr, double, long, sparse, prose, livre+article}; CIV loi de finances CST = {fr, single/table, long, mixed, table+prose, line-item}; Ghana Finance Act = {en, single, medium, concentrated, prose, section}.
 
 ## A1. Column handling (from `column_layout`)
 - **single** → linear text extraction is safe.
@@ -33,16 +33,16 @@ Report the parameter vector in one line, then proceed. A document type is just a
 - **long** → MUST section by the document's own divisions (`numbering`: livre / chapter / section-range). Extract batch by batch, each ≤ a tractable size, each independently anchored. Attention loss over a long document is NOT solved by prompt wording — it is solved by never processing the whole document at once. The per-section coverage report proves nothing was skipped.
 
 ## A4. Retrieval mode (from `earmark_density`)
-- **concentrated** (annexes: earmarks in most assignment-signalling articles) → enumerate ALL divisions, sweep each. Coverage unit = every article.
+- **concentrated** (e.g. a Francophone annexe fiscale — earmarks in most assignment-signalling articles) → enumerate ALL divisions, sweep each. Coverage unit = every article.
 - **sparse** (codes: earmarks scattered thin across many pages) → LOCATE-THEN-EXTRACT: first run the assignment-grammar sweep across the whole (column-verified) text to inventory earmark-bearing passages with anchors; then extract those passages in batches. Coverage unit = every division certified swept (even those with zero hits), so "sparse" never means "under-read."
 
 ## A5. Content form (from `content_form`)
 - **prose_clauses** → clause extraction into the evidence table (C5–C7).
-- **table** (e.g. loi de finances CST recap) → structural extraction: evidence rows ONLY for labels that themselves name a source instrument/assignment; a separate budget-amounts table (account × year × amount_budgeted) for the figures. Do NOT clause-read hundreds of budget-credit pages; do NOT manufacture evidence rows from bare fund-name lines with no assignment clause (fund existing ≠ earmark).
+- **table** (e.g. a Francophone loi de finances CST recap) → structural extraction: evidence rows ONLY for labels that themselves name a source instrument/assignment; a separate budget-amounts table (account × year × amount_budgeted) for the figures. Do NOT clause-read hundreds of budget-credit pages; do NOT manufacture evidence rows from bare fund-name lines with no assignment clause (fund existing ≠ earmark).
 - **mixed** → apply both to their respective regions of the document.
 
 ## A6. Preprocessing gate (invariant across parameters — always run)
-Certify the CANONICAL file (not the app-uploaded artifact, which can decompose a searchable PDF into a zip-of-images): (1) format = %PDF or state actual; (2) encoding = clean UTF-8, accents intact (mojibake → silent false nulls in the grammar sweep); (3) internal title year matches expected; (4) mid-document sample returns coherent text (corrupt font layer hazard). Any failure → STOP and report (or route to OCR: rasterize → language-appropriate OCR → preserve page anchors → verify load-bearing figures against page images).
+Certify the CANONICAL file (not the app-uploaded artifact, which can decompose a searchable PDF into a zip-of-images): (1) format = %PDF or state actual; (2) encoding = clean UTF-8, language-diagnostic characters intact (fr: accents — affecté/réparti/reversé; en: ligatures ﬁ/ﬂ, curly quotes, §/£; a font with no Unicode cmap garbles ASCII too) — mojibake → silent false nulls in the grammar sweep; (3) internal title year matches expected; (4) mid-document sample returns coherent text (corrupt font layer hazard). Any failure → STOP and report (or route to OCR: rasterize → language-appropriate OCR → preserve page anchors → verify load-bearing figures against page images).
 
 ## A7. Handoff to CORE
-After A0–A6, extraction proceeds under the CORE (C1–C9) unchanged. The adapter changed only HOW the text was located and read; WHAT is extracted, the schema, the grain, the id-free discipline, and the audits are the frozen core. Every run therefore produces the same auditable outputs regardless of document type — which is the reproducibility claim, made structurally true.
+After A0–A6, extraction proceeds under the CORE (C1–C9). The adapter changed only HOW the text was located and read; WHAT is extracted, the schema, the grain, the id-free discipline, and the audits are the frozen core. Every run therefore produces the same auditable outputs regardless of document type — which is the reproducibility claim, made structurally true.

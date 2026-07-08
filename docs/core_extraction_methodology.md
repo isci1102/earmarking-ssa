@@ -7,7 +7,7 @@
 ---
 
 ## C1. Operative test (binding)
-An earmark requires BOTH (a) a source levy/tax/redevance/contribution/prélèvement/parafiscal charge AND (b) a verbatim clause assigning its proceeds — in whole or in part — to a specific named recipient. A fund merely existing is not sufficient. The ENACTING text governs; motivational/explanatory text (exposé des motifs, preamble, memorandum) is motivation, not assignment — never infer an unnamed destination.
+An earmark requires BOTH (a) a source levy/tax/charge/contribution of any kind (including civil-law forms such as redevance, prélèvement, parafiscal charge) AND (b) a verbatim clause assigning its proceeds — in whole or in part — to a specific named recipient. A fund merely existing is not sufficient. The ENACTING text governs; motivational/explanatory text (exposé des motifs, preamble, memorandum) is motivation, not assignment — never infer an unnamed destination.
 
 ## C2. Scope — extract-broad, filter-later
 Record EVERY assignment to a specific named recipient (fund, organism, ministry, tier of government, sector, programme, supranational body), marking `is_purpose_restricted` (1 = earmark subset; 0 = general-purpose recipient, e.g. a tier's general budget — still recorded, filtered at analysis). Only the pure general-State-budget residual uses `beneficiary_type = general_budget`. The earmark-vs-not decision is a recorded FIELD applied at analysis, never an extraction-time exclusion.

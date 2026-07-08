@@ -91,3 +91,32 @@ This keeps everything in one table (no separate matrix table for now) while the 
 - **Null over coercion.** Deferred/ banded → null + flag, never a fabricated scalar and never text in a numeric column.
 - **`document_year` ≠ earmark year.** All earmark-temporal concepts derived in the panel.
 - **Fund-agnostic retrieval.** Anchor on assignment grammar + section structure, never a known-fund list.
+
+## 8. Serialization contract — `xlsx` and `json` are two renderings of one structure
+
+The extraction output has ONE canonical structure and two equivalent renderings, selected by the run parameter `output_format`. The schema (the evidence columns, §4) is identical in both; the format is transport, not schema. A converter round-trip (`xlsx → json → xlsx`) must reproduce the original — that equivalence is what guarantees the two renderings cannot silently diverge.
+
+**One document = one output unit.** In `xlsx` it is a nine-sheet workbook; in `json` it is one object with nine keys. The mapping is exact:
+
+| workbook sheet | json key | json shape |
+|---|---|---|
+| `RUN_META` | `run_meta` | object, nested: `{parameters, a6_gate, id_discipline}` (see below) |
+| `evidence_table` | `evidence_rows` | array of row objects, each with the 44 §4 columns as keys, in §4 order |
+| `COVERAGE_REPORT` | `coverage_report` | array of `{division, page_range, finding, evidence_rows}` |
+| `RECALL_AUDIT` | `recall_audit` | array of `{pages, grammar_hit, status, reason}` |
+| `LOCATE_RECONCILIATION` | `locate_reconciliation` | **object** `{N, M, K, J, entries:[…]}` — counts are first-class scalar fields, not derived by counting rows |
+| `GOLD_SCORING` | `gold_scoring` | array of `{gold_id, gold_article, doc_article, must_classify, result, detail}` |
+| `FIELD_EXERCISE_NOTE` | `field_exercise_note` | array of `{flag_class, rows, call_made, for_signoff}` |
+| `CONFIDENCE_REASONS` | `confidence_reasons` | array of `{evidence_rows, confidence, type, reason}` |
+| `SCHEMA_STRESS_NOTE` | `schema_stress_note` | string (empty string if none) |
+
+**`evidence_rows` — the data.** A flat array; one object per evidence row; keys = the 44 columns of §4 in order. `null` for empty cells (never `""` for a missing value in a numeric or enum column). `instrument_id`/`pair_id` are `null` at extraction (id-free discipline, §3). This array is the only key the reconciliation pass consumes; because every row carries `document_id` (col 6), rows remain self-identifying once pulled out of the envelope, so reconciliation concatenates `evidence_rows` across all document objects into one table. The other eight keys are the audit envelope that travels with the data but is not fed to reconciliation.
+
+**`run_meta` — nested, not flat.** The xlsx `RUN_META` sheet crams three groups into a 2-column sheet with `--- SECTION ---` separator rows; in `json` those become proper nested objects and the separator kludge disappears:
+- `parameters`: `{country, document_id, document_type, document_year, section_scope, mode, schema_version, structural_vector, canonical_file}`
+- `a6_gate`: `{format, encoding, internal_year, mid_doc_legibility, fonts, column_layout, assignment_grammar_density, extraction_tool, gate_result}` — the A6 preprocessing-gate record
+- `id_discipline`: `{evidence_id_scheme, instrument_pair_id, change_type_structural_break}` — the C6 note
+
+**`locate_reconciliation` is an object, not an array,** because `{N, M, K, J}` are the machine-checkable invariant of the run: an orchestrator asserts `M + K == N` and `J == 0` (or that the J passages were appended to the inventory) before admitting the document to reconciliation. `entries` is the per-inventory-entry list `{inventory_entry, unit_ref, page, disposition, m_or_k, evidence_rows_or_reason}`. When no LOCATE pass was run for the scope, the key is `null`.
+
+**Equivalence rule (the contract, not a suggestion).** Whichever rendering is emitted, it must contain all nine components; a `json` output missing any of the eight audit keys is malformed, exactly as a workbook missing an audit sheet would be. `xlsx` and `json` are interconvertible without loss; if a round-trip does not reproduce the original, the output is non-conformant. This makes the C9 audit set format-independent: the eight audits are carried in both renderings, never dropped when switching to `json`.
