@@ -1,0 +1,36 @@
+country: [CIV]
+document_id:  [ACTESDIRCEDEAO2026]
+document_type: [actes_directives_cedeao]  
+document_year: [2026]   
+structural_vector: {language: fr, column_layout: detect, length_class: short,
+                    earmark_density: concentrated, content_form: mixed,
+                    numbering: chapitre} 
+section_scope: [whole document]
+output_format: [json]
+file(s): attached
+
+Governing method (read and apply from the project files): CORE extraction methodology (C1–C10 — invariant method, grain, id-free discipline, audits), RETRIEVAL ADAPTER (A0–A7 — instantiate with the structural_vector), evidence dictionary v0.5 (schema), decision rules (§1–§12), assumptions register, the country's coverage map and gold standard. Do not reopen settled decisions.
+
+Tripwire (cached copy of CORE C1 — binding even if file retrieval is imperfect; C1 governs on conflict): an earmark requires BOTH (a) a source levy/tax/charge/contribution of any kind (including civil-law forms such as redevance, prélèvement, parafiscal charge) AND (b) a verbatim clause in the ENACTING text assigning its proceeds — in whole or in part — to a specific named recipient. A fund merely existing is not sufficient; explanatory/motivational text is not assignment; never infer an unnamed destination. Unit of analysis = the INSTRUMENT, not the article/section.
+
+Preprocessing gate (Adapter A6 — certify the CANONICAL file, STOP on failure): confirm format (%PDF or state actual — the app-upload path can decompose a searchable PDF into a zip-of-images, so certify the source file); clean UTF-8 with language-diagnostic characters intact (fr: accents — affecté/réparti/reversé; en: ligatures ﬁ/ﬂ, curly quotes, §/£; a font with no Unicode cmap garbles ASCII too — mojibake breaks the grammar sweep → silent false nulls); internal year matches document_year; mid-document sample legible. If column_layout is double or detect: run the canary — extract one known/representative assignment passage and confirm it reads as a contiguous clause; if interleaved, read from page images and never extract shares from interleaved text.
+
+Retrieval lexicon (cached copy of Adapter A2, fund-agnostic — the recipient is the OUTPUT of the search, never the input; NO known-fund checklist; A2 governs on conflict):
+
+fr: affecté/affectation, au profit de, réparti/répartition, quote-part, quotité, produit de la taxe/du droit, est financé par le produit de, reversé, alimente, ristourne, compte spécial / compte d'affectation.
+en: earmarked/dedicated/allocated/appropriated to, paid into, credited to, retained by, "X% shall be transferred to", established fund, levied for the purpose of.
+
+
+MODE = LOCATE. Do NOT populate any v0.5 schema field — no rates, shares, allocation_nature, is_purpose_restricted, beneficiary_type, nothing. The only outputs are the inventory and the coverage certificate below.
+
+Sweep the ENTIRE section_scope using the fund-agnostic lexicon. Optimise for RECALL over precision: flag every passage containing assignment grammar even if it may later prove to be tax-sharing, cost-recovery, or general-budget. Classification is EXTRACT's job; your job is to miss nothing. Because this is a shallow locating scan (not field extraction), it is safe over a long document — but you must certify full coverage (below).
+
+Table-region guard (LOCATE inherits Adapter A5). In content_form: table regions (budget special-account recaps, credit tables), the recall-over-precision rule applies to CLAUSES, not to table lines: inventory only labels/rows that themselves contain assignment language (a source instrument + assignment grammar). Bare fund-name + amount lines are NOT flagged individually — they are certified in the coverage certificate as "table region pp. X–Y: N credit lines, no assignment clauses" (one certificate line, not N inventory rows). This keeps the inventory a worklist of extractable clauses, not a transcription of the budget.
+
+Output 1 — PASSAGE INVENTORY (clean table, saveable; this is the interface to the EXTRACT pass): one row per flagged passage with columns {unit_ref (livre+article / section / line), page_start, page_end, trigger_cue (the exact assignment-grammar words found), instrument_hint (the levy, verbatim short), recipient_hint (the destination as written), prelim_flag (earmark_candidate | tax_sharing_candidate | cost_recovery_candidate | ambiguous)}. prelim_flag is a NON-binding triage hint for sequencing EXTRACT, not a classification.
+
+Output 2 — SWEEP-COVERAGE CERTIFICATE: per division (livre/chapter/section-range), state the article/section range examined and certify it was swept in full, so a division with zero flagged passages is a CERTIFIED absence, not an unswept gap. This is the proof the whole section_scope was scanned front to back — the guard against silent shallowing. The certificate must enumerate the division ranges CONTIGUOUSLY from the document's first division to its last — any numbering gap between certified ranges is itself a reportable finding (either the document skips those numbers, stated, or the sweep did — stop and re-sweep).
+
+Render Output 1 + Output 2 per output_format (dictionary §9): xlsx = two-sheet workbook (PASSAGE_INVENTORY, SWEEP_COVERAGE_CERTIFICATE); json = one object with two keys (passage_inventory, sweep_coverage_certificate). Emit this as a FILE, not only an inline table — it is the interface to the EXTRACT pass and, in the API, the JSON contract the orchestrator filters to section_scope and passes to each extract call. Both components must be present in either rendering; the two are interconvertible without loss (§9). This is a SEPARATE output unit from the EXTRACT nine-key evidence object (§8); LOCATE populates no schema field. Name the output file per the §9 convention: {country}_{document_id}_LOCATE.{ext}.
+
+Do not extract, classify definitively, or summarise the document. Locate and inventory only.
