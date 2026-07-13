@@ -1,0 +1,27 @@
+country: CIV
+output_format: json          # constant for the API; applies to all docs
+
+documents:
+  AF2024:                    # ← the KEY is the document_id (loader reads it as such)
+    status: OK
+    document_type: annexe_fiscale
+    document_year: 2024
+    structural_vector: {language: fr, column_layout: single, length_class: short,
+                        earmark_density: concentrated, content_form: mixed, numbering: article}
+    extract_scope: whole     # → one call, section_scope="whole document"
+    pdf: source_pdfs/AF2024.pdf
+    gold: gold/CIV_gold_standard.json
+
+  CGI2026:
+      status: OK
+      document_type: cgi
+      document_year: 2026
+      structural_vector: {language: fr, column_layout: double, length_class: long,
+                          earmark_density: sparse, content_form: prose_clauses, numbering: livre+article}
+      extract_scope: per_section
+      locate_pdf: source_pdfs/CGI2026.pdf      # whole doc for the LOCATE sweep
+      sections:                                     # each = a label + its own PDF
+        - {scope: "Livre 1",   pdf: source_pdfs/CIV_2026_CGI_livre_1.pdf}
+        - {scope: "Livre 2-3", pdf: source_pdfs/CIV_2026_CGI_livre_2-3.pdf}
+        - {scope: "Livre 4-6", pdf: source_pdfs/CIV_2026_CGI_livre_4-6.pdf} 
+      gold: gold/CIV_gold_standard.json

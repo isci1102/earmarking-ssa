@@ -1,10 +1,10 @@
 country: [CIV]
-document_id:  [ACTESDIRCEDEAO2026]
-document_type: [actes_directives_cedeao]  
-document_year: [2026]   
-structural_vector: {language: fr, column_layout: detect, length_class: short,
+document_id:  [AF2024]
+document_type: [annexe_fiscale]  
+document_year: [2024]   
+structural_vector: {language: fr, column_layout: single, length_class: long,
                     earmark_density: concentrated, content_form: mixed,
-                    numbering: chapitre} 
+                    numbering: article} 
 section_scope: [whole document]
 output_format: [json]
 file(s): attached

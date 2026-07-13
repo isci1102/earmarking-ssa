@@ -12,6 +12,8 @@ secrets/
 # ── Data & outputs (live in Dropbox, never in git) ──
 data/
 outputs/
+countries/*/source_pdfs/
+countries/*/outputs/
 *.xlsx
 *.csv
 !docs/**/*.csv            # exception: allow small reference CSVs under docs/ if any

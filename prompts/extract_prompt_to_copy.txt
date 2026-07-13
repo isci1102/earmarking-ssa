@@ -1,12 +1,14 @@
 country: [CIV]
-document_id: [AF2025]
-document_type: [annexe_fiscale]
-document_year: [2025]
-structural_vector: {language: [fr], column_layout: [single], length_class: [long], earmark_density: [concentrated], content_form: [mixed], numbering: [article]}
-gold_standard_file: [CIV_gold_standard_v2]
+document_id:  [AF2024]
+document_type: [annexe_fiscale]  
+document_year: [2024]   
+structural_vector: {language: fr, column_layout: single, length_class: long,
+                    earmark_density: concentrated, content_form: mixed,
+                    numbering: article} 
 section_scope: [whole document]
-output_format: [xlsx]
+output_format: [json]
 file(s): attached
+
 Governing method (read and apply from the project files): CORE extraction methodology (C1–C10 — invariant method, grain, id-free discipline, audits), RETRIEVAL ADAPTER (A0–A7 — instantiate with the structural_vector), evidence dictionary v0.5 (schema), decision rules (§1–§12), assumptions register, the country's coverage map and gold standard. Do not reopen settled decisions.
 
 Tripwire (cached copy of CORE C1 — binding even if file retrieval is imperfect; C1 governs on conflict): an earmark requires BOTH (a) a source levy/tax/charge/contribution of any kind (including civil-law forms such as redevance, prélèvement, parafiscal charge) AND (b) a verbatim clause in the ENACTING text assigning its proceeds — in whole or in part — to a specific named recipient. A fund merely existing is not sufficient; explanatory/motivational text is not assignment; never infer an unnamed destination. Unit of analysis = the INSTRUMENT, not the article/section.
@@ -18,12 +20,11 @@ Retrieval lexicon (cached copy of Adapter A2, fund-agnostic — the recipient is
 fr: affecté/affectation, au profit de, réparti/répartition, quote-part, quotité, produit de la taxe/du droit, est financé par le produit de, reversé, alimente, ristourne, compte spécial / compte d'affectation.
 en: earmarked/dedicated/allocated/appropriated to, paid into, credited to, retained by, "X% shall be transferred to", established fund, levied for the purpose of.
 
-
 MODE = EXTRACT. Populate the full v0.5 evidence table for every earmark-bearing clause in section_scope. If a LOCATE pass was run, its passage inventory (in this chat, or attached) is the worklist — extract each located passage; but still run your own recall check on section_scope so nothing outside the inventory is missed.
 
 Apply CORE C1–C9 and all v0.5 mechanics: id-free (natural keys + verbatim excerpt + page on every row; instrument_id/pair_id blank); source and allocation as distinct row types; rate/share as value+type+basis (banded → scalar null + *_is_schedule + *_schedule_detail; deferred → *_basis = deferred_arrete; renvoi → rate_basis = cross_reference); nested keys → share_level + share_pool (self-contained descriptor, not a row-pointer); allocation_nature per §11/§11.1 (cost-recovery/user-charge vs earmark; collector-share sub-rule); is_purpose_restricted (extract-broad, filter-later — record general-budget recipients too); assignment_type; lineage signals predecessor_ref/predecessor_relation ONLY from what the text states (§9), no cross-document judgment; change_type/structural_break provisional, human_validation_status = unchecked. No-invention/null discipline throughout (unnamed destination → null + medium; never fabricate).
 
-Batch-boundary rule (multi-batch documents only). When section_scope is a slice of a larger document, an allocation key that fails the 100%-sum check at the scope boundary is NOT a schema-stress event and must NOT trigger a STOP: set partial_key = 1, note "remainder outside section_scope (suspected [division])", and continue. Cross-batch key joins are reconciliation's job, not the batch's. Reserve SCHEMA-STRESS for genuinely new structural patterns, not for scope-truncation artifacts.
+Batch-boundary rule (multi-batch documents only). When section_scope is a slice of a larger document, an allocation key that fails the 100%-sum check at the scope boundary is NOT a schema-stress event and must NOT trigger a STOP: set partial_key = 1, note "remainder outside section_scope (suspected [division])", and continue. Reserve SCHEMA-STRESS for genuinely new structural patterns, not for scope-truncation artifacts.
 
 Output — the evidence set + the CORE C9 audit set, rendered per output_format (dictionary §8): xlsx = nine-sheet workbook; json = one object with nine keys. Same content either way (v0.5 column order, plain formatting, no decorative fills); the eight audits below are carried in BOTH renderings, never dropped when emitting json. The locate_reconciliation audit (7) is emitted in json as an object with first-class {N, M, K, J} scalars so the invariant is machine-checkable (dictionary §8). Name the output file per the §8 convention: {country}_{document_id}_EXTRACT_{scope_slug}.{ext}. (1) COVERAGE REPORT — every division in section_scope accounted for (rows produced OR "checked — no earmark clause"); if working from a LOCATE inventory, every inventory entry either extracted or dismissed with reason. (2) RECALL AUDIT — every assignment-grammar hit in section_scope captured or dismissed with a one-line reason. (3) FIELD-EXERCISE NOTE — flag every judgment-sensitive call (§11.1 collector-share, cross_reference, banded, is_purpose_restricted = 0, share_level = 2) for sign-off. (4) SCHEMA-STRESS NOTE — genuinely new gaps only; a real one → STOP before continuing the corpus. Scope-truncated keys are handled by the batch-boundary rule above and do not belong here. (5) CONFIDENCE REASONS — per non-high row, document problem vs schema problem. (6) GOLD SCORING — open gold_standard_file, identify cases anchored to this document_id (and within section_scope), score recall + invented fields; state if none anchored here. (7) LOCATE RECONCILIATION (mandatory whenever a LOCATE inventory exists for this scope): report four counts and their identities — N inventory entries within section_scope; M extracted to evidence rows (map entry → evidence_id(s)); K dismissed (each with a one-line reason: not an assignment clause / cost-recovery only / duplicate of entry X / …); J evidence rows extracted from passages NOT in the inventory (each listed with unit_ref + page). Invariant: M + K = N, every entry accounted. If J > 0, the locate pass under-recalled: flag the inventory as INCOMPLETE and append the J passages to it (amendment logged, not silent) so the inventory remains the true coverage denominator.
 
