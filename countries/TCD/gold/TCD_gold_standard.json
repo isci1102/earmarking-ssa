@@ -1,0 +1,210 @@
+{
+  "title": "Gold-standard test set v1 — TCD earmarked taxes",
+  "schema_note": "Aligned to the evidence-table grain (v0.5). `document_year` = year of the SOURCE DOCUMENT, NOT earmark establishment. Cases keyed by document_id + legal_article + official_name (verbatim) + verbatim_excerpt (the natural keys reconciliation groups on). `role` mirrors evidence-table row_type (source/allocation). All verbatim_excerpt values transcribed from the COLUMN-AWARE extraction (gutter x=208, reader `read_tcd.py`); a naive extract_text() interleaves columns on this document and will not reproduce them.",
+  "provenance": [
+    "v1 authored against TCD_2024_CGI only — the sole document in the TCD corpus at time of writing (see coverage_map_TCD.md §1).",
+    "Every case below was located by the A2 French assignment-grammar sweep and its excerpt verified against the column-aware text at the stated page. No case is carried over by analogy from CIV.",
+    "Page anchors are PDF page indices (1-based) of TCD_2024_CGI, NOT the printed folio (which runs ~3 pages ahead: PDF p21 carries printed folio 24). EXTRACT must record the same convention or gold scoring will false-fail on page mismatch."
+  ],
+  "changes_from_civ_v2": [
+    "TCD_GOLD_01 (telecom 9% key) replaces CIV_GOLD_01 as the PRIMARY UNIT TEST: same structural role (multi-destination key with a general_budget residual), but sits in Annexe IV 'Dispositions non codifiées', not the body.",
+    "TCD_NEG_01 is a heading-vs-enacting-text contradiction — a trap class CIV v2 does not contain (CIV's no-invention trap, GOLD_06, is a fund named only in the exposé des motifs).",
+    "No CGI/annexe-fiscale cross-document pair exists yet (single-document corpus), so no multi-year recall case is scoreable. Add on LFI acquisition."
+  ],
+  "scoring_protocol": {
+    "recall": "fraction of TCD_GOLD_* classified (true|possible)_earmark AND surfacing the required verbatim clause",
+    "allocation_accuracy": "fraction of allocation shares recovered with exact %; per_unit/fixed amounts recovered with correct *_type (not coerced to %)",
+    "precision_negative": "fraction of TCD_NEG_* correctly not_earmark",
+    "no_invention": "ZERO tolerance. Check TCD_NEG_01 (must NOT emit ARCEP as destination of Art. 217 despite the chapter heading) and every deferred-to-arrêté share (TCD_HARD_01, TCD_HARD_02 — must be null).",
+    "null_handling": "legitimately-absent fields MUST be null: share_value on HARD_01/HARD_02; rate_value on GOLD_02 (rate_basis = deferred_arrete on collection modalities is NOT a null rate — the 9% cap IS stated, see case note).",
+    "entity_resolution": "TCD_GOLD_01 (Annexe IV Art. 39, telecom 9% key) and TCD_NEG_01 (body Art. 217, redevance 20 FCFA) are DISTINCT instruments both touching mobile telephony and both citing ARCEP. Must NOT be merged. Flag if the extractor pairs them.",
+    "column_integrity": "TCD_GOLD_03 doubles as the column-aware canary: if the extractor's text is interleaved, the IGL sub-key will splice with the Art. 33 category list on the adjacent column and the 19/31 shares will not reconstruct. A GOLD_03 failure is a PIPELINE failure (re-check the crop), not a judgment failure — diagnose before scoring the rest."
+  },
+  "caveats": [
+    "TCD_2024_CGI is a CONSOLIDATED edition: cases establish that an earmark is in force as consolidated in 2024, NOT its establishment year. In-line tags such as '(art 51 LF2020)' date the most recent AMENDMENT, not establishment (coverage_map_TCD.md §4). Do not score any case on year_established.",
+    "The file passed through a third-party re-processing tool (Producer: iLovePDF) and is not a certified-canonical original. Every share below is a load-bearing figure and carries the standing image-QC requirement (coverage_map_TCD.md §3) before its row is marked validated.",
+    "Annexe IV 'Dispositions non codifiées' re-numbers its articles from 1 and its numbering collides with the body's (an 'Article 39' exists in Annexe IV AND an 'Art. 39' region exists in Livre I). legal_article alone is NOT unique in this document — natural-key matching MUST include page anchor. Annexe IV also interleaves articles from different source LFIs without re-ordering (Art. 29, then 'LOI DES FINANCES 2020 / Article 14', then Art. 42, then Article 39): article numbers there are NOT monotone and a gap is not evidence of a missing article.",
+    "TCD_HARD_03 (patente distribution key) is deliberately kept OUT of scored gold: its beneficiary set mixes general-budget (trésor), a social-insurance body (CNPS), a chamber of commerce and a food-security office, with the key itself deferred to arrêté. It is a genuine §7/A10 boundary case for manager ratification, not a settled classification."
+  ],
+  "gold_cases": [
+    {
+      "gold_id": "TCD_GOLD_01",
+      "role": "allocation_set",
+      "must_classify": "true_earmark",
+      "country": "TCD",
+      "document_id": "TCD_2024_CGI",
+      "document_year": 2024,
+      "legal_article": "Annexe IV, Article 39 (Art. 51 LF2020)",
+      "page_start": 272,
+      "page_end": 272,
+      "official_name": "Redevances prélevés sur le chiffre d'affaires réalisé par les sociétés de téléphonie mobile",
+      "tax_instrument": "telecom_levy",
+      "rate_value": 9,
+      "rate_type": "ad_valorem_pct",
+      "rate_basis": "stated",
+      "tax_base_detail": "chiffre d'affaires réalisé par les sociétés de téléphonie mobile",
+      "allocation_key": {
+        "ARCEP": "3% (agency, is_purpose_restricted=1)",
+        "ADETIC": "3% (agency, is_purpose_restricted=1)",
+        "ENASTIC": "1% (agency, is_purpose_restricted=1)",
+        "ANSICE": "1% (agency, is_purpose_restricted=1)",
+        "Service du Budget": "1% (general_budget, non-earmarked residual)"
+      },
+      "verbatim_excerpt": "Article 39 - (Art. 51 LF2020) - Les produits des redevances prélevés sur le chiffre d'affaires réalisé par les sociétés de téléphonie mobile plafonnés à un taux cumulé de 9% sont repartis comme suit : ARCEP 3% ADETIC 3% ENASTIC 1% ANSICE 1% Service du Budget 1% Un arrêté du Ministre des Finances, du Budget et des Comptes Publics fixera les modalités pratiques de recouvrement, du suivi et le mécanisme de décaissement au profit des bénéficiaires.",
+      "scoring_notes": "PRIMARY UNIT TEST (the CIV_GOLD_01 analogue). Must: (1) classify true_earmark; (2) recover all 5 shares with exact %; (3) mark 'Service du Budget' 1% as general_budget / non-earmarked residual and the four agencies as is_purpose_restricted=1; (4) NOT null the rate — the 9% cumulative cap IS stated ('plafonnés à un taux cumulé de 9%'), rate_basis=stated; the arrêté defers only recouvrement/suivi/décaissement MODALITIES, not the rate or the key. Deferring the rate here would be a false null. (5) share_level=1 on all five (flat key, no sub-pool). Shares sum to 9%, i.e. 100% of the levy — the 100% check applies to the key, not to the 9% figure. Wrong % = fail on allocation accuracy."
+    },
+    {
+      "gold_id": "TCD_GOLD_02",
+      "role": "allocation_set",
+      "must_classify": "true_earmark",
+      "country": "TCD",
+      "document_id": "TCD_2024_CGI",
+      "document_year": 2024,
+      "legal_article": "Annexe IV, Article 29",
+      "page_start": 272,
+      "page_end": 272,
+      "official_name": "Redevances pour l'utilisation des fréquences et/ou canaux radio électroniques",
+      "tax_instrument": "redevance",
+      "rate_value": null,
+      "rate_basis": "not_applicable",
+      "allocation_key": {
+        "Autorité de Régulation des Communications Électroniques et des Postes": "95% (agency)",
+        "Trésor Public": "5% (general_budget)"
+      },
+      "verbatim_excerpt": "Article 29 Pour compter du 1er janvier 2021, les produits de redevances pour l'utilisation des fréquences et/ou canaux radio électroniques sont repartis comme suit : - 95% au profit de l'Autorité de Régulation des Communications Électroniques et des Postes - 5% au profit du Trésor Public.",
+      "scoring_notes": "§11.1 COLLECTOR-SHARE TEST (the CIAPOL analogue — the hard call this document actually contains, contra the earlier ARCEP-Art.217 guess). ARCEP is the sector regulator retaining 95% of a spectrum fee. Discriminating test: does the 95% fund the ADMINISTRATION OF THIS LEVY (-> cost_recovery_component) or ARCEP's SUBSTANTIVE MANDATE (-> proceeds_share, earmark)? Expected call: proceeds_share / is_purpose_restricted=1 — 95% cannot plausibly price the cost of collecting a fee, and spectrum regulation is ARCEP's substantive mandate, not the cost of billing for it. This is a JUDGMENT-SENSITIVE call: the extractor MUST flag it for human sign-off in FIELD_EXERCISE_NOTE (C9) with the excerpt, regardless of which way it rules. Scoring: an unflagged call fails even if the classification is correct. Note the source clause names no rate — the fee schedule is elsewhere/unstated in this document; rate_value null is CORRECT here, not a miss."
+    },
+    {
+      "gold_id": "TCD_GOLD_03",
+      "role": "allocation_set",
+      "must_classify": "true_earmark",
+      "country": "TCD",
+      "document_id": "TCD_2024_CGI",
+      "document_year": 2024,
+      "legal_article": "Art. 32.III (art 23 LFI 2023)",
+      "page_start": 21,
+      "page_end": 21,
+      "official_name": "Impôt Général Libératoire (IGL)",
+      "tax_instrument": "other",
+      "source_article": "Art. 31 (art 2 LFI 2020) — IGL liquidé par application du taux de 5% au chiffre d'affaires déclaré (catégories A et B); barème par zone/catégorie at Art. 32.I",
+      "allocation_key": {
+        "communes centrales et communes d'arrondissements": "50% of IGL proceeds (share_level=1)",
+        "N'Djamena sub-key — 19% tranche": "Mairie centrale 20%, communes d'arrondissements 80% (share_level=2)",
+        "N'Djamena sub-key — 31% tranche": "Mairie centrale 80%, communes des arrondissements 20% (share_level=2)"
+      },
+      "verbatim_excerpt": "III. 50% des produits de l'IGL sont affectés aux communes centrales et aux communes d'arrondissements. Pour la ville de N'Djamena, les 50% des produits de l'IGL sont répartis comme suit : - Les 19% des produits de l'IGL : Mairie centrale 20% et communes d'arrondissements 80% ; - Les 31% des produits de l'IGL : Mairie centrale 80% et communes des arrondissements 20%. Les modalités de collecte et de reversement, notamment par voie électronique seront précisés par un Arrêté du Ministre en charge des Finances.",
+      "scoring_notes": "NESTED-KEY TEST (v0.5 share_level/share_pool, decision rules §12) AND the column-integrity canary. Structure: a level-1 50% to communes, then a N'Djamena-specific decomposition into a 19% and a 31% tranche (19+31=50, arithmetically consistent), each re-split between mairie centrale and communes d'arrondissements. Must: (1) set share_level=2 with share_pool = the verbatim tranche descriptor for the 20/80 and 80/20 rows; (2) apply the 100%-sum check WITHIN each tranche (20+80=100), never across levels. CRITICAL — source_internal_inconsistency (dict. col. 31) MUST be populated: the text says 'les 50% ... sont répartis comme suit' and then denominates the tranches in 'des produits de l'IGL' (the gross), not in the 50% pool. The two readings are reconcilable (19+31=50) but the drafting mixes pool bases, and the extractor must RECORD the ambiguity rather than silently pick a denominator. Also: is_purpose_restricted is a genuine judgment here — the destination is a tier of government (communes), so absent a stated purpose restriction the expected call is 0 / tax_sharing_general (register A10, decision rules §7), NOT an automatic earmark. An extractor that classifies this true_earmark purely because 'affectés aux communes' contains assignment grammar has failed the §7 criterion. Flag for sign-off either way."
+    },
+    {
+      "gold_id": "TCD_GOLD_04",
+      "role": "allocation",
+      "must_classify": "true_earmark",
+      "country": "TCD",
+      "document_id": "TCD_2024_CGI",
+      "document_year": 2024,
+      "legal_article": "Art. 216 (art 25 LFI 2017)",
+      "page_start": 60,
+      "page_end": 60,
+      "official_name": "Taxe au profit du Fonds National de Développement du Sport",
+      "verbatim_excerpt": "CHAPITRE IX: TAXE AU PROFIT DU FONDS NATIONAL DE DEVELOPPEMENT DU SPORT Art. 216 – Abrogé (art 25 LFI 2017)",
+      "change_type": "repeal",
+      "predecessor_ref": "art 25 LFI 2017",
+      "predecessor_relation": "none",
+      "scoring_notes": "REPEAL-STUB TEST. The chapter heading survives; its only article is repealed. Must: (1) EMIT a row (an extractor that skips the stub loses the repeal event); (2) set change_type=repeal with predecessor_ref='art 25 LFI 2017'; (3) NOT emit a rate, base, or share — none survives in the text; inventing any is a no-invention failure. (4) The destination IS recoverable from the heading verbatim ('Fonds National de Développement du Sport') — this is NOT invention, the fund is named in the document's own enacting-structure heading; but the row must not assert an in-force earmark. must_classify=true_earmark refers to the instrument's TYPE, not its 2024 status: the correct row records a repealed earmark. Scoring accepts either a single allocation row flagged repealed, or a source+allocation pair, provided change_type=repeal is set. Rationale for inclusion: this is the ONLY visible pre-2024 earmark death in the document, and the left-truncation warning (coverage_map_TCD.md §4) turns on the extractor capturing it."
+    }
+  ],
+  "hard_recall_cases": [
+    {
+      "gold_id": "TCD_HARD_01",
+      "must_classify": "possible_earmark",
+      "country": "TCD",
+      "document_id": "TCD_2024_CGI",
+      "document_year": 2024,
+      "legal_article": "Annexe IV, Article 46",
+      "page_start": 272,
+      "page_end": 272,
+      "official_name": "Solde des restes dus des terrains urbains (prix de cession ou d'adjudication et droits afférents)",
+      "verbatim_excerpt": "La clé de répartition du produit entre l'État, la Conservation Foncière et les Collectivités Autonomes est fixée par arrêté du Ministre des Finances, du Budget et des Comptes Publics.",
+      "scoring_notes": "DEFERRED-KEY TEST. Assignment clause present, destinations named (État / Conservation Foncière / Collectivités Autonomes), key deferred -> share_value MUST be null and share_basis=deferred_arrete on every row. Inventing any % is a no-invention failure. Secondary test: the payment is a land-purchase balance bundling cession price with taxe de bornage, journal officiel, frais d'enregistrement, taxe municipale, timbres, cadastre — the §11 cost-recovery boundary is live (is the Conservation Foncière share pricing the registration service the payer is consuming?). Flag for sign-off; do not auto-resolve."
+    },
+    {
+      "gold_id": "TCD_HARD_02",
+      "must_classify": "possible_earmark",
+      "country": "TCD",
+      "document_id": "TCD_2024_CGI",
+      "document_year": 2024,
+      "legal_article": "Art. 790.XVI",
+      "page_start": 151,
+      "page_end": 151,
+      "official_name": "Contribution des patentes",
+      "verbatim_excerpt": "Un arrêté du Ministre en charge du budget précisera les modalités de répartition des produits de la patente entre le trésor public, la caisse nationale de prévoyance sociale, la chambre de commerce et l'office nationale de la sécurité alimentaire.",
+      "scoring_notes": "MIXED-BENEFICIARY DEFERRED KEY. Four named recipients spanning general_budget (trésor), a social-insurance body (CNPS), a chamber of commerce, and a food-security office; key deferred to arrêté -> all share_value null, share_basis=deferred_arrete. Must EMIT one allocation row per named beneficiary (extract-broad, C2), each with its own beneficiary_type, and must NOT collapse them into one row or drop the non-trésor recipients. is_purpose_restricted differs across the four — this is the point of the case. Boundary call; flag for sign-off. NOTE: legal_article to be confirmed against the printed article number at the page image; the excerpt sits in a patente article on PDF p151 and the roman-numeral sub-paragraph (XVI) is read from the column-aware text."
+    },
+    {
+      "gold_id": "TCD_HARD_03",
+      "must_classify": "possible_earmark",
+      "country": "TCD",
+      "document_id": "TCD_2024_CGI",
+      "document_year": 2024,
+      "legal_article": "Art. 823 (to confirm)",
+      "page_start": 156,
+      "page_end": 156,
+      "official_name": "Taxe sur l'électricité",
+      "verbatim_excerpt": "II. Elle est perçue sous forme d'une majoration sur le tarif de l'électricité par l'usager, encaissé puis reversé par le concessionnaire à la commune. III. Le taux de la taxe est fixé à 2 % calculé sur le montant de consommation de l'usager.",
+      "scoring_notes": "COLLECTOR-CONDUIT TEST (distinct from §11.1 collector-BENEFICIARY). The concessionnaire collects and remits in full to the commune; it retains nothing, so no cost_recovery/proceeds_share question arises on the concessionnaire — an extractor that emits an allocation row for the concessionnaire has mistaken a conduit for a beneficiary. Must: (1) single allocation row, destination=commune; (2) share_basis=whole_proceeds_implied ('reversé ... à la commune', no % stated) with share_value null — NOT 100 invented into the field; (3) rate_value=2, rate_type=ad_valorem_pct on the source row. Expected is_purpose_restricted=0 (commune's general budget, no stated purpose restriction) -> tax_sharing_general; flag for sign-off. legal_article to confirm at the page image."
+    }
+  ],
+  "negative_controls": [
+    {
+      "gold_id": "TCD_NEG_01",
+      "must_classify": "not_earmark",
+      "document_id": "TCD_2024_CGI",
+      "page_start": 60,
+      "legal_article": "Art. 217 (art 52 LFI 2020), under CHAPITRE X",
+      "trap": "Chapter heading reads 'TAXE AU PROFIT DE L'ARCEP'; the enacting text assigns the redevance 'au profit du trésor public'. ARCEP appears only as the body APPROVING the termination price, not as a recipient.",
+      "verbatim_excerpt": "CHAPITRE X: TAXE AU PROFIT DE L'ARCEP Art. 217 (art 52 LFI 2020) Pour compter du 1er janvier 2020, le tarif des appels internationaux entrants est constitué du prix de terminaison approuvé par l'autorité de régulation des communications électroniques et des postes et d'une redevance plafonnée à vingt (20) FCFA sur chaque appel international entrant au profit du trésor public.",
+      "why_not": "HIGHEST-VALUE TRAP IN THIS SET. The heading is not the enacting text (C1: the ENACTING text governs). An extractor that reads the chapter title and emits destination='ARCEP' has invented an assignment the enacting clause contradicts. Correct output: a source row (redevance, per_unit_amount 20 FCFA, cap) + an allocation row to trésor public with beneficiary_type=general_budget, is_purpose_restricted=0 -> not_earmark. Emitting ARCEP as destination = no-invention FAILURE, scored zero-tolerance. Distinguish from CIV_GOLD_06 (fund named only in the exposé des motifs): here the fund is named in a STRUCTURAL heading of the enacting document, which is a stronger lure. Secondary: must not merge with TCD_GOLD_01 (Annexe IV Art. 39), a different instrument that DOES pay ARCEP."
+    },
+    {
+      "gold_id": "TCD_NEG_02",
+      "must_classify": "not_earmark",
+      "document_id": "TCD_2024_CGI",
+      "page_start": 10,
+      "legal_article": "Art. 3 region (IRPP territoriality)",
+      "trap": "'affectés au Tchad' — 'affecté' meaning POSTED TO A DUTY STATION, not proceeds assigned.",
+      "verbatim_excerpt": "Les fonctionnaires tchadiens ou étrangers payés par un budget autre que l'un des budgets du Tchad pendant toute la durée de la période au cours de laquelle ils restent affectés au Tchad.",
+      "why_not": "LEXICAL FALSE POSITIVE on the A2 cue 'affecté'. No source levy, no proceeds, no recipient — the verb governs persons, not revenue. Must be DISMISSED WITH A REASON in the RECALL_AUDIT (C9), not silently dropped: the sweep is recall-optimised and is SUPPOSED to surface this; the test is whether the dismissal is recorded. Same lexical trap recurs at p145/p147 ('édifices affectés à l'exercice public des cultes', 'affectés à un service public' — buildings, exemption criteria) and p26 ('éléments d'actif affectés à l'exercice de la profession' — assets). An extractor with zero recall_audit dismissals on this document has almost certainly filtered the sweep too early."
+    },
+    {
+      "gold_id": "TCD_NEG_03",
+      "must_classify": "not_earmark",
+      "document_id": "TCD_2024_CGI",
+      "page_start": 144,
+      "legal_article": "Art. 759",
+      "trap": "'Il est perçu au profit des communes, les impôts et taxes ci-après' — assignment grammar to a named tier, but unrestricted devolution to a general budget.",
+      "verbatim_excerpt": "Art. 759 I. Il est perçu au profit des communes, les impôts et taxes ci-après : 1° Contribution foncière des propriétés bâties ; 2° Contribution foncière des propriétés non bâties ; 3° Contribution des patentes ; ... II. Toutefois, toutes les contributions et taxes visées ci-dessus sont perçues au profit du budget de l'État dans les localités où il n'existe pas de Communes.",
+      "why_not": "SCOPE-GATE TEST, not a recall test. This IS a specific-recipient assignment and MUST be RECORDED (extract-broad, C2/A10) — but with is_purpose_restricted=0, assignment_type=tax_sharing_general: no purpose restriction on USE, so it is fiscal decentralization, not an earmark (decision rules §7). must_classify=not_earmark refers to the EARMARK SUBSET, NOT to exclusion from the table. Two ways to fail: (a) drop the rows (extraction-time exclusion — forbidden); (b) classify true_earmark because 'au profit de' fired. Note II is a conditional re-routing to the État budget where no commune exists — record it; do not treat it as a second earmark."
+    },
+    {
+      "gold_id": "TCD_NEG_04",
+      "must_classify": "not_earmark",
+      "document_id": "TCD_2024_CGI",
+      "page_start": 209,
+      "legal_article": "Art. 1097",
+      "trap": "'confisqués au profit du Trésor' — assignment grammar attached to a CONFISCATION penalty, not a levy on a base.",
+      "verbatim_excerpt": "Les timbres, papiers et impressions timbrés saisis chez ceux qui s'en permettent le commerce en contravention aux dispositions de l'article 537 sont confisqués au profit du Trésor. En outre, les délinquants sont passibles d'une amende de 1.000 FCFA pour la première fois et de 10.000 FCFA en cas de récidive.",
+      "why_not": "Two independent grounds. (1) The object is seized property, not the proceeds of a levy — no source instrument in the C1 sense. (2) Even reading it as revenue, the destination is the Trésor = general_budget, is_purpose_restricted=0. Bears on the OPEN CIV ITEM 'fines as earmark sources under C1': Livre V of this document was swept and every penalty/confiscation assignment found routes to Trésor/État (general budget), so TCD_2024_CGI supplies NO fines-as-earmark case and cannot settle the open item either way. Record that as a certified absence in the coverage report, not as evidence the question is closed."
+    }
+  ],
+  "corrections_log": [
+    "v1: The pre-draft candidate list (coverage_map_TCD.md §7, first entry) proposed 'Taxe au profit de l'ARCEP (Art. 217)' as a §11.1 collector-share gold case. REJECTED on verbatim verification: Art. 217 assigns to the trésor public, not ARCEP; ARCEP is only the price-approving authority. Reclassified as TCD_NEG_01 (heading-vs-enacting-text trap). The genuine §11.1 case is Annexe IV Art. 29 (ARCEP 95% of spectrum fees) = TCD_GOLD_02, found only after sweeping the annexes.",
+    "v1: The same candidate list described the IGL case as 'nested N'Djamena re-split at 19%'. CORRECTED: the 19% and 31% are tranches OF THE IGL that sum to the 50% commune share; the nesting is at the 20/80 and 80/20 sub-splits within each tranche. The clause mixes pool bases and now carries a mandatory source_internal_inconsistency requirement (TCD_GOLD_03).",
+    "v1: The same candidate list described 'Redevance 20 FCFA -> trésor public' as a standalone negative control. Merged into TCD_NEG_01, since it is the enacting text of the ARCEP-headed chapter and the two cannot be scored independently."
+  ],
+  "open_items": [
+    "legal_article numbers on TCD_HARD_02 and TCD_HARD_03 are read from the column-aware text and not yet confirmed against the page image; confirm before these cases are used to fail a run.",
+    "No multi-year / cross-document recall case exists (single-document corpus). On LFI acquisition, add: (a) an Annexe IV article traced back to its originating LFI (e.g. Art. 39 -> LF2020 art. 51) as a cross-document identity test; (b) a partial_key case if any LFI restates only amended tiers of a key held in the CGI.",
+    "No CEMAC community-levy case. The probe found 37 CEMAC mentions but no prélèvement communautaire instrument (coverage_map_TCD.md §6). If LOCATE surfaces one, add a case exercising assignment_type=community_levy_external.",
+    "TCD_GOLD_02 expected call (proceeds_share) is the AUTHOR'S reading, not a ratified ruling. It is scored as 'must flag for sign-off'; the classification itself should not be used to fail a run until the manager ratifies §11.1 for regulator-retained spectrum fees."
+  ]
+}

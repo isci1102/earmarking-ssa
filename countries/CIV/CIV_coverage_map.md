@@ -16,11 +16,11 @@ Legend — Status: `OK` (clean text layer, ready) · `OCR` (needs OCR/re-render 
 | 2015 | OK (verify) | MISSING | — | — |
 | 2016 | **BAD-SUB** (site served 2017 file) | **BAD-SUB** | — | — |
 | 2017 | OK (verify) | present — **OCR** (font layer corrupt: extracts as mojibake; page images fine) | DEFER (rectificative) | — |
-| 2018 | OK (verify) | MISSING | — | — |
-| 2019 | OK (verify) | MISSING | — | — |
-| 2020 | OK (verify) | MISSING | DEFER (rectificative) | — |
-| 2021 | OK — but Ghostscript-produced, **verify/OCR** | MISSING | DEFER (rectificative) — inspected: amount-revision only, no structural earmark change | — |
-| 2022 | OK (verify) | MISSING | — | — |
+| 2018 | OK (verify) | **OK** | — | — |
+| 2019 | OK (verify) | **OK** | — | — |
+| 2020 | OK (verify) | **OK** | DEFER (rectificative) | — |
+| 2021 | OK — but Ghostscript-produced, **verify/OCR** | present — **OCR** (font layer corrupt: extracts as mojibake; page images fine) | DEFER (rectificative) — inspected: amount-revision only, no structural earmark change | — |
+| 2022 | OK (verify) | **OK** | — | — |
 | 2023 | OK (verify) | **OK** | DEFER (rectificative) | — |
 | 2024 | OK (verify) | **OK** | — | — |
 | 2025 | OK (558 pp, ABBYY, text OK) | **OK** (genuine ABBYY PDF v1.5, 150 pp, clean text; internal title "ANNÉE 2025" — filename corrected by researcher; earlier "mislabeled text" note superseded) | — | — |

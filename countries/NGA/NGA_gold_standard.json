@@ -1,0 +1,162 @@
+{
+  "title": "Gold-standard test set v1 — NGA earmarked taxes",
+  "schema_note": "Aligned to the evidence-table grain (evidence_table_dictionary_v0_5). `document_year` = year of the SOURCE DOCUMENT, not the earmark. `legal_article` = verbatim section/schedule reference (Anglophone: 'section', 'Schedule'). All `verbatim_excerpt` values transcribed from NGA_2025_tax_act.pdf (UTF-8 plaintext, Official long-title 'NIGERIA TAX ACT, 2025'); minor spacing normalised, no wording changed. Enum values tagged [NGA] are additive extensions logged in the assumptions register (A12); no column renamed.",
+  "changes_from_civ_template": [
+    "Single primary allocation_set case (Development Levy) instead of CIV's telecom levy; same allocation_set role.",
+    "Adds a THREE-LEVEL nested key (levy -> special account -> 7 funds -> 11 defence agencies) not present in CIV/TCD gold — share_level 1/2/3.",
+    "Adds a MERGER lineage archetype (4 predecessor levies -> 1 Development Levy) — distinct from CIV within-pair share changes and TCD repeal-stub.",
+    "Negative controls localised to Anglophone traps: insurance 'reserve fund' accounting; royalty-as-source-without-assignment; schedule spending-side."
+  ],
+  "scoring_protocol": {
+    "recall": "fraction of NGA_GOLD_* classified (true|possible)_earmark AND surfacing the required verbatim clause",
+    "allocation_accuracy": "fraction of allocation shares recovered with exact %; the seven level-2 shares AND the eleven level-3 defence sub-shares each scored; wrong % or coercing a level-3 sub-share to a top-level share = fail",
+    "precision_negative": "fraction of NGA_NEG_* correctly not_earmark",
+    "no_invention": "ZERO tolerance. NGA_GOLD_01: must NOT invent a general_budget residual (unlike CIV_GOLD_01, the levy is 100% earmarked across the 7 — an extractor that adds a 'Budget'/'CRF' line fails). NGA_HARD_02: the appropriation-review clause (s.59(5)) must NOT null the stated shares, and must NOT be recorded as a share itself.",
+    "null_handling": "NGA_GOLD_01 rate_value=4 is stated; the level-3 defence sub-split is stated in the Fourteenth Schedule (NOT null). Where a beneficiary's own establishing rate is unknown from THIS document, leave null — do not import from establishing Acts.",
+    "entity_resolution": "NGA_GOLD_01 Development Levy vs its four predecessors (TET, NITDA, NASENI, Police Trust Fund levy, each attested in their establishing Acts) MUST be FLAGGED as a merger for adjudication (predecessor_ref set), not auto-merged into one continuous instrument and not treated as four unrelated new instruments."
+  },
+  "caveats": [
+    "NTA is the 2025 CONSOLIDATED Act, effective 1 Jan 2026. These cases establish the earmark as in force under the NTA regime, NOT its historical establishment year (TET 1993/2011, NITDA 2007, NASENI 1992, Police Trust Fund 2019 are predecessor references, not verified from these excerpts).",
+    "The Development Levy is a MERGER: s.59 replaces four predecessor levies. structural_break=1, change_type=merger, predecessor_ref=[tertiary_education_tax, NITDA_levy, NASENI_levy, police_trust_fund_levy]. Shares here are NOT comparable to the predecessor levies' individual rates.",
+    "s.59(6) + Fourteenth Schedule create a THIRD allocation level (the 10% Defence & Security tranche is itself split 11 ways). share_level=3, share_pool='Defence and Security Infrastructure Fund'. The 11 sub-shares sum within the 10% tranche, not within the whole levy.",
+    "hydrocarbon carve-out (s.59(4)): the levy does NOT apply to assessable profits computed for hydrocarbon tax — a base-scope exclusion, recorded on the source row, not an allocation.",
+    "Enum extensions used ([NGA], additive per A12): tax_instrument='profits_surcharge'; document_type='consolidated_tax_act'. No existing value renamed."
+  ],
+  "gold_cases": [
+    {
+      "gold_id": "NGA_GOLD_01",
+      "role": "allocation_set",
+      "must_classify": "true_earmark",
+      "country": "NGA",
+      "document_id": "NTA_2025",
+      "document_year": 2025,
+      "legal_article": "section 59",
+      "official_name": "Development levy",
+      "tax_instrument": "profits_surcharge",
+      "rate_value": 4,
+      "rate_type": "ad_valorem_pct",
+      "tax_base_detail": "assessable profits of all companies chargeable under Chapters Two and Three, other than small companies and non-resident companies; NOT levied on profits computed for hydrocarbon tax (s.59(4))",
+      "structural_break": 1,
+      "change_type": "merger",
+      "predecessor_ref": ["tertiary_education_tax (TETFund Act)", "NITDA levy (NITDA Act 2007)", "NASENI levy (NASENI Act)", "Police Trust Fund levy (Police Trust Fund Act 2019)"],
+      "allocation_key": {
+        "Tertiary Education Trust Fund": "50%",
+        "Nigerian Education Loan [Fund]": "15%",
+        "National Information Technology Development Fund": "8%",
+        "National Agency for Science and Engineering Infrastructure": "8%",
+        "National Board for Technological Incubation": "4%",
+        "Defence and Security Infrastructure Fund": "10% (share_level=2; itself split 11 ways at share_level=3 per Fourteenth Schedule)",
+        "National Cybersecurity Fund": "5%"
+      },
+      "share_pool": "special account created under s.59(2)",
+      "share_level_note": "levy (L1) -> special account (L1) -> 7 funds (L2) -> Defence tranche sub-split (L3)",
+      "enabling_reference": "Nigeria Tax Act 2025, s.59; Fourteenth Schedule (further allocation of s.59(3)(f))",
+      "verbatim_excerpt": "59. (1) A development levy of 4% is imposed on the assessable profits of all companies chargeable to tax under Chapters Two and Three of this Act, other than small companies and non-resident companies. (2) The Service shall collect the levy and pay it into a special account created for that purpose. (3) The revenue accruing from the levy shall be distributed as follows - (a) Tertiary Education Trust Fund - 50%; (b) Nigerian Education Loan - 15%; (c) National Information Technology Development Fund - 8%; (d) National Agency for Science and Engineering Infrastructure - 8%; (e) National Board for Technological Incubation - 4%; (f) Defence and Security Infrastructure Fund - 10%; and (g) National Cybersecurity Fund - 5%.",
+      "scoring_notes": "PRIMARY UNIT TEST. Must: (1) classify true_earmark; (2) recover ALL SEVEN level-2 shares with exact % (50/15/8/8/4/10/5 = 100, no general-budget residual — inventing one FAILS no_invention); (3) flag as MERGER with the four predecessor_ref (entity_resolution); (4) record hydrocarbon carve-out on the source row, not as an allocation; (5) recognise s.59(6)+Fourteenth Schedule as a level-3 nested split under the Defence tranche (see NGA_GOLD_03). Wrong % = fail on allocation accuracy."
+    },
+    {
+      "gold_id": "NGA_GOLD_02",
+      "role": "allocation",
+      "must_classify": "true_earmark",
+      "country": "NGA",
+      "document_id": "NTA_2025",
+      "document_year": 2025,
+      "legal_article": "Fourteenth Schedule, para 1",
+      "official_name": "Defence and Security Infrastructure Fund (Development levy tranche)",
+      "tax_instrument": "profits_surcharge",
+      "rate_value": null,
+      "rate_type": null,
+      "allocation_key": {
+        "Defence and Security Infrastructure Fund": "10% of the development levy (from s.59(3)(f))"
+      },
+      "share_pool": "special account created under s.59(2)",
+      "share_level": 2,
+      "enabling_reference": "Nigeria Tax Act 2025, Fourteenth Schedule para 1(2)",
+      "verbatim_excerpt": "(2) There shall be paid and credited to the Fund established under this schedule, 10% of the development levy imposed in section 59 of this Act. (3) The Fund created under this schedule shall be used exclusively for operational purposes to enhance security in Nigeria.",
+      "scoring_notes": "Tests the source->tranche link: the 10% here is the SAME share as s.59(3)(f), sourced from a different clause (the Schedule). Must NOT double-count as a second 10% on top of the s.59 total. rate legitimately null (a tranche of the parent levy, no own rate). is_purpose_restricted=1 ('used exclusively for operational purposes to enhance security')."
+    },
+    {
+      "gold_id": "NGA_GOLD_03",
+      "role": "allocation_set",
+      "must_classify": "true_earmark",
+      "country": "NGA",
+      "document_id": "NTA_2025",
+      "document_year": 2025,
+      "legal_article": "Fourteenth Schedule, para 3",
+      "official_name": "Defence and Security Infrastructure Fund — agency sub-allocation",
+      "tax_instrument": "profits_surcharge",
+      "rate_value": null,
+      "rate_type": null,
+      "allocation_key": {
+        "Defence Headquarters": "8%",
+        "Nigerian Army": "20%",
+        "Nigerian Navy": "12.5%",
+        "Nigerian Airforce": "12.5%",
+        "ONSA / Counter-Terrorism Center": "6%",
+        "Nigeria Police Force": "10%",
+        "Police Trust Fund": "8%",
+        "Department of State Security": "9%",
+        "Nigerian Security and Civil Defence Corps": "5%",
+        "Nigerian Forest Security Service": "5%",
+        "Defence Intelligence Agency": "4%"
+      },
+      "share_pool": "Defence and Security Infrastructure Fund (the 10% tranche of the levy)",
+      "share_level": 3,
+      "enabling_reference": "Nigeria Tax Act 2025, Fourteenth Schedule para 3",
+      "verbatim_excerpt": "3. The 10% allocation from the development levy shall be divided and managed as follows: 1 Defence Headquarters 8%; 2 Nigerian Army 20%; 3 Nigerian Navy 12.5%; 4 Nigerian Airforce 12.5%; 5 ONSA / Counter-Terrorism Center 6%; 6 Nigeria Police Force 10%; 7 Police Trust Fund 8%; 8 Department of State Security 9%; 9 Nigerian Security and Civil Defence Corps 5%; 10 Nigerian Forest Security Service 5%; 11 Defence Intelligence Agency 4%.",
+      "scoring_notes": "THREE-LEVEL NESTED KEY TEST (novel vs CIV/TCD). Must: (1) recover all 11 sub-shares with exact % (note 12.5% non-integer values — must NOT round); (2) set share_level=3 with share_pool='Defence and Security Infrastructure Fund'; (3) verify the 11 sum to 100% OF THE TRANCHE, not of the whole levy — a validator summing these against the 7 top-level shares mis-fires; (4) note 'Police Trust Fund' reappears here as a level-3 destination even though the Police Trust Fund LEVY was a predecessor merged away at level-1 — same name, different role (destination not source), do not conflate."
+    }
+  ],
+  "hard_recall_cases": [
+    {
+      "gold_id": "NGA_HARD_01",
+      "must_classify": "possible_earmark",
+      "document_id": "NTA_2025",
+      "document_year": 2025,
+      "official_name": "Development levy — hydrocarbon base carve-out",
+      "legal_article": "section 59(4)",
+      "verbatim_excerpt": "(4) The tax imposed under this Part shall not be levied on assessable profits computed for the purposes of hydrocarbon tax.",
+      "scoring_notes": "Base-scope exclusion, NOT an allocation and NOT a negative. Must be recorded on the SOURCE row of NGA_GOLD_01 as a base restriction (tax_base_detail), with share_value null. Tests that a scope-limiting clause is neither dropped nor mistaken for a beneficiary."
+    },
+    {
+      "gold_id": "NGA_HARD_02",
+      "must_classify": "possible_earmark",
+      "document_id": "NTA_2025",
+      "document_year": 2025,
+      "official_name": "Development levy — appropriation / review clauses",
+      "legal_article": "section 59(5); Fourteenth Schedule para 4",
+      "verbatim_excerpt": "(5) ... every beneficiary Agency and Fund in subsection (3) shall be required to prepare and submit their income and expenditure to the National Assembly for appropriation. [Schedule para 4] The allocation, distribution, and management of the Fund ... may be reviewed by the National Assembly to ensure the effective distribution and maintenance of the Fund based on needs and emerging challenges in Nigeria.",
+      "scoring_notes": "DEFERRAL / NO-INVENTION TEST. The 'subject to appropriation' and 'may be reviewed by the National Assembly' language does NOT make the stated shares null — the shares in s.59(3) and the Schedule ARE stated and must be recovered. The review clause is recorded as a note (assignment_type modifier / deferred-to-appropriation flag), NOT as its own allocation row and NOT as a reason to null the shares. Contrast CIV_HARD_10 where the % ITSELF was deferred to arrêté (there, null); here the % is stated and only future revision is deferred (here, NOT null)."
+    }
+  ],
+  "negative_controls": [
+    {
+      "gold_id": "NGA_NEG_01",
+      "must_classify": "not_earmark",
+      "trap": "Insurance 'special reserve fund' / 'general reserve fund' (s.61(10)-(11)): 'an amount ... to a special reserve fund and accumulated until it becomes the ... statutory minimum paid-up capital'.",
+      "why_not": "A prudential ACCOUNTING reserve internal to the taxpayer, credited from the company's own profits — no revenue is levied and assigned to an external beneficiary. 'Fund' keyword adjacency without an assignment pipe. The Anglophone analogue of the CIV reserve/keyword false-positive."
+    },
+    {
+      "gold_id": "NGA_NEG_02",
+      "must_classify": "not_earmark",
+      "trap": "Petroleum royalty as a SOURCE with no stated assignment in this document (s.89, s.106, s.112 'Payment royalty'; s.2007(3) 'Royalty is imposed on any mineral...').",
+      "why_not": "A revenue instrument (source end of the pipe) but no destination clause in the NTA — royalty flows to the Federation Account under separate instruments not present here. Source without assignment = not an earmark row here. Do NOT invent a Federation-Account destination from background knowledge (no_invention). Record as source-only if at all; log destination as unobserved."
+    },
+    {
+      "gold_id": "NGA_NEG_03",
+      "must_classify": "not_earmark",
+      "trap": "General company income tax imposition (Chapter Two, s.3 'Imposition of tax') — the ordinary CIT charge with no dedicated destination.",
+      "why_not": "Imposed to general federal revenue, not a specific purpose-restricted recipient. Recorded with is_purpose_restricted=0 / beneficiary_type=general_budget for the sum-check (A10 extract-broad), but classified not_earmark. Tests the scope-gate: presence in the evidence table != membership in the earmark subset."
+    },
+    {
+      "gold_id": "NGA_NEG_04",
+      "must_classify": "not_earmark",
+      "trap": "Fourteenth Schedule spending-side: 'Monies from the fund shall be used by the agencies to fulfil ... functions and obligations ... including obligations on maintenance, reporting and accountability of funding' (para 2(3)).",
+      "why_not": "Expenditure-management language about how a fund SPENDS, once revenue has already been assigned — the destination end only, describing use not assignment. The revenue assignment is already captured in NGA_GOLD_02/03; this clause adds no new source->destination pipe. Guards against emitting a duplicate allocation row from spending-rules prose."
+    }
+  ],
+  "corrections_log": [
+    "v1: Development Levy top-level split confirmed from s.59(3) verbatim as 50/15/8/8/4/10/5 (TETFund/NELF/NITDF/NASENI/NBTI/Defence&Security/Cybersecurity). Note: earlier external-source summaries reported the Defence tranche variously as 4% or 10% — resolved against source: 10% at level-2 (s.59(3)(f)), with the 4% being the Defence Intelligence Agency's level-3 sub-share within that tranche (Fourteenth Schedule para 3, line 11). The 4%-vs-10% discrepancy was a level-confusion in secondary reporting; the gold file records both at their correct levels.",
+    "v1 open: predecessor_ref rates (TET 2->2.5->3%, NITDA 1%, NASENI 0.25%, Police 0.005%) to be attested from the respective establishing Acts + Finance Act chain, not from this document; left as references pending those extractions."
+  ]
+}

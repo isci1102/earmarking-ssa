@@ -8,6 +8,7 @@ config/paths.yml          # real filled-in config; commit paths.example.yml inst
 *.pem
 secrets/
 **/credentials*
+writings/
 
 # ── Data & outputs (live in Dropbox, never in git) ──
 data/
