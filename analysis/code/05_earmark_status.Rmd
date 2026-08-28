@@ -1,0 +1,634 @@
+---
+title: "Allocation-source earmark status classification"
+author: "IMF research project"
+date: "`r format(Sys.Date(), '%Y-%m-%d')`"
+output:
+  html_document:
+    toc: true
+    toc_depth: 3
+    df_print: paged
+---
+
+This notebook classifies each allocation-source instrument from the original, non-expanded allocation table. It appends only `earmark_status` to the two derived allocation files. Existing fields, missing values, rows, and row order are preserved exactly. The expanded table is never used to count allocation channels.
+
+```{r setup, include=FALSE}
+input_path <- knitr::current_input(dir = TRUE)
+project_root <- normalizePath(
+  file.path(dirname(input_path), "..", ".."),
+  winslash = "/",
+  mustWork = TRUE
+)
+
+knitr::opts_knit$set(root.dir = project_root)
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+
+library(dplyr)
+library(readr)
+library(stringr)
+library(tibble)
+library(knitr)
+
+options(stringsAsFactors = FALSE, scipen = 999)
+
+target_paths <- c(
+  allocation = file.path(
+    project_root, "data", "derived", "SSA_EARMARK_ALLOCATIONS.csv"
+  ),
+  expanded = file.path(
+    project_root,
+    "data",
+    "derived",
+    "SSA_EARMARK_ALLOCATIONS_EXPANDED.csv"
+  )
+)
+
+required_allocation_columns <- c(
+  "country", "instrument_id", "pair_id", "allocation_nature",
+  "is_purpose_restricted", "beneficiary_type"
+)
+
+read_all_character <- function(path) {
+  read_csv(
+    path,
+    col_types = cols(.default = col_character()),
+    na = "",
+    trim_ws = FALSE,
+    name_repair = "minimal",
+    show_col_types = FALSE,
+    progress = FALSE
+  )
+}
+
+display_table <- function(data) {
+  if (nrow(data) == 0L) {
+    cat("No rows to report.\n")
+  } else {
+    knitr::kable(data, row.names = FALSE)
+  }
+}
+
+is_missing_key <- function(values) {
+  is.na(values) | str_trim(values) == ""
+}
+
+remove_previous_status <- function(data, dataset_name) {
+  status_positions <- which(names(data) == "earmark_status")
+
+  if (length(status_positions) > 1L) {
+    stop(dataset_name, " contains more than one earmark_status column.")
+  }
+  if (length(status_positions) == 1L && status_positions != ncol(data)) {
+    stop(dataset_name, " has earmark_status in a non-final column position.")
+  }
+
+  data %>% select(-any_of("earmark_status"))
+}
+
+same_existing_values_and_order <- function(before, after) {
+  old_columns <- names(before)
+  identical(names(after)[seq_along(old_columns)], old_columns) &&
+    nrow(before) == nrow(after) &&
+    all(vapply(
+      old_columns,
+      function(column) identical(before[[column]], after[[column]]),
+      logical(1)
+    ))
+}
+
+missing_by_column <- function(data) {
+  vapply(data, function(column) sum(is.na(column)), integer(1))
+}
+
+duplicate_row_count <- function(data) {
+  sum(duplicated(as.data.frame(data, stringsAsFactors = FALSE)))
+}
+
+make_table_checks <- function(dataset_name, before_data, after_data) {
+  old_columns <- names(before_data)
+  old_values_same <- same_existing_values_and_order(before_data, after_data)
+  old_missing_same <- identical(
+    missing_by_column(before_data),
+    missing_by_column(after_data %>% select(all_of(old_columns)))
+  )
+  status_by_key <- after_data %>%
+    filter(!is_missing_key(country), !is_missing_key(instrument_id)) %>%
+    group_by(country, instrument_id) %>%
+    summarise(
+      n_status_values = n_distinct(earmark_status, na.rm = TRUE),
+      .groups = "drop"
+    )
+
+  tibble(
+    dataset = dataset_name,
+    check = c(
+      "rows before = rows after",
+      "existing columns unchanged and in the same order",
+      "existing values and row order unchanged",
+      "no duplicate rows introduced by the merge",
+      "existing-column missingness unchanged",
+      "exactly one status per non-missing country + instrument_id",
+      "earmark_status has no missing values",
+      "output is original columns plus one appended column"
+    ),
+    before = c(
+      as.character(nrow(before_data)),
+      paste0(length(old_columns), " original columns"),
+      "original field vectors",
+      as.character(duplicate_row_count(before_data)),
+      "per-column missing counts",
+      as.character(n_distinct(paste(
+        before_data$country, before_data$instrument_id
+      ))),
+      "not applicable",
+      paste0(length(old_columns), " columns")
+    ),
+    after = c(
+      as.character(nrow(after_data)),
+      paste0(length(old_columns), " original columns"),
+      if_else(old_values_same, "identical", "changed"),
+      as.character(duplicate_row_count(
+        after_data %>% select(all_of(old_columns))
+      )),
+      if_else(old_missing_same, "identical", "changed"),
+      paste0(
+        nrow(status_by_key), " keys; max distinct status = ",
+        ifelse(nrow(status_by_key) == 0L, NA_integer_, max(status_by_key$n_status_values))
+      ),
+      as.character(sum(is.na(after_data$earmark_status))),
+      paste0(ncol(after_data), " columns; earmark_status last")
+    ),
+    passed = c(
+      nrow(before_data) == nrow(after_data),
+      identical(names(after_data)[seq_along(old_columns)], old_columns),
+      old_values_same,
+      duplicate_row_count(before_data) == duplicate_row_count(
+        after_data %>% select(all_of(old_columns))
+      ),
+      old_missing_same,
+      nrow(status_by_key) == n_distinct(paste(
+        before_data$country, before_data$instrument_id
+      )) &&
+        all(status_by_key$n_status_values == 1L),
+      !any(is.na(after_data$earmark_status)),
+      identical(names(after_data), c(old_columns, "earmark_status"))
+    )
+  )
+}
+```
+
+# 1. Load and validate the two allocation tables
+
+All columns are imported as character values so identifiers, numeric-looking legal text, accents, and existing missing cells can be written back without type conversion.
+
+```{r load-and-validate-inputs}
+if (!all(file.exists(target_paths))) {
+  stop(
+    "Missing required input file(s): ",
+    paste(target_paths[!file.exists(target_paths)], collapse = "; ")
+  )
+}
+
+allocation_loaded <- read_all_character(target_paths[["allocation"]])
+expanded_loaded <- read_all_character(target_paths[["expanded"]])
+
+SSA_EARMARK_ALLOCATIONS_before <- remove_previous_status(
+  allocation_loaded, "SSA_EARMARK_ALLOCATIONS"
+)
+SSA_EARMARK_ALLOCATIONS_EXPANDED_before <- remove_previous_status(
+  expanded_loaded, "SSA_EARMARK_ALLOCATIONS_EXPANDED"
+)
+
+missing_required <- setdiff(
+  required_allocation_columns,
+  names(SSA_EARMARK_ALLOCATIONS_before)
+)
+missing_expanded_required <- setdiff(
+  c("country", "instrument_id", "pair_id"),
+  names(SSA_EARMARK_ALLOCATIONS_EXPANDED_before)
+)
+
+if (length(missing_required) > 0L || length(missing_expanded_required) > 0L) {
+  stop(
+    "Required columns are missing. Allocation: ",
+    paste(missing_required, collapse = "; "),
+    "; Expanded: ",
+    paste(missing_expanded_required, collapse = "; ")
+  )
+}
+
+key_missingness <- bind_rows(
+  tibble(
+    dataset = "SSA_EARMARK_ALLOCATIONS",
+    field = c("country", "instrument_id", "pair_id"),
+    n_missing = c(
+      sum(is_missing_key(SSA_EARMARK_ALLOCATIONS_before$country)),
+      sum(is_missing_key(SSA_EARMARK_ALLOCATIONS_before$instrument_id)),
+      sum(is_missing_key(SSA_EARMARK_ALLOCATIONS_before$pair_id))
+    )
+  ),
+  tibble(
+    dataset = "SSA_EARMARK_ALLOCATIONS_EXPANDED",
+    field = c("country", "instrument_id", "pair_id"),
+    n_missing = c(
+      sum(is_missing_key(SSA_EARMARK_ALLOCATIONS_EXPANDED_before$country)),
+      sum(is_missing_key(SSA_EARMARK_ALLOCATIONS_EXPANDED_before$instrument_id)),
+      sum(is_missing_key(SSA_EARMARK_ALLOCATIONS_EXPANDED_before$pair_id))
+    )
+  )
+)
+
+if (any(key_missingness$n_missing > 0L)) {
+  print(key_missingness %>% filter(n_missing > 0L))
+  stop("Missing merge or counting keys prevent a complete classification.")
+}
+
+pair_instrument_conflicts <- SSA_EARMARK_ALLOCATIONS_before %>%
+  distinct(country, pair_id, instrument_id) %>%
+  count(country, pair_id, name = "n_instruments") %>%
+  filter(n_instruments > 1L)
+
+if (nrow(pair_instrument_conflicts) > 0L) {
+  print(pair_instrument_conflicts)
+  stop("At least one allocation pair maps to several source instruments.")
+}
+
+expanded_keys_missing_from_allocation <-
+  SSA_EARMARK_ALLOCATIONS_EXPANDED_before %>%
+  distinct(country, instrument_id) %>%
+  anti_join(
+    SSA_EARMARK_ALLOCATIONS_before %>% distinct(country, instrument_id),
+    by = c("country", "instrument_id")
+  )
+
+if (nrow(expanded_keys_missing_from_allocation) > 0L) {
+  print(expanded_keys_missing_from_allocation)
+  stop("Expanded allocation-source keys are absent from the original table.")
+}
+
+classification_input_missingness <- tibble(
+  field = c(
+    "allocation_nature", "is_purpose_restricted", "beneficiary_type"
+  ),
+  n_missing_rows = c(
+    sum(is.na(SSA_EARMARK_ALLOCATIONS_before$allocation_nature)),
+    sum(is.na(SSA_EARMARK_ALLOCATIONS_before$is_purpose_restricted)),
+    sum(is.na(SSA_EARMARK_ALLOCATIONS_before$beneficiary_type))
+  )
+)
+```
+
+```{r display-input-audit}
+input_inventory <- tibble(
+  dataset = c(
+    "SSA_EARMARK_ALLOCATIONS", "SSA_EARMARK_ALLOCATIONS_EXPANDED"
+  ),
+  rows = c(
+    nrow(SSA_EARMARK_ALLOCATIONS_before),
+    nrow(SSA_EARMARK_ALLOCATIONS_EXPANDED_before)
+  ),
+  original_columns = c(
+    ncol(SSA_EARMARK_ALLOCATIONS_before),
+    ncol(SSA_EARMARK_ALLOCATIONS_EXPANDED_before)
+  ),
+  distinct_source_instruments = c(
+    n_distinct(paste(
+      SSA_EARMARK_ALLOCATIONS_before$country,
+      SSA_EARMARK_ALLOCATIONS_before$instrument_id
+    )),
+    n_distinct(paste(
+      SSA_EARMARK_ALLOCATIONS_EXPANDED_before$country,
+      SSA_EARMARK_ALLOCATIONS_EXPANDED_before$instrument_id
+    ))
+  )
+)
+
+display_table(input_inventory)
+display_table(key_missingness)
+display_table(classification_input_missingness)
+```
+
+# 2. Classify allocation-source instruments
+
+The two channel flags exist only inside this computation. Only flags that are explicitly `TRUE` enter a channel count; pre-existing missing source values remain missing and are not imputed.
+
+```{r compute-earmark-status}
+allocation_classification_rows <- SSA_EARMARK_ALLOCATIONS_before %>%
+  mutate(
+    restricted_channel =
+      allocation_nature == "proceeds_share" &
+      is_purpose_restricted == "1" &
+      beneficiary_type != "general_budget",
+    unrestricted_channel =
+      allocation_nature == "proceeds_share" &
+      (
+        is_purpose_restricted == "0" |
+        beneficiary_type == "general_budget"
+      )
+  )
+
+instrument_classification_audit <- allocation_classification_rows %>%
+  group_by(country, instrument_id) %>%
+  summarise(
+    n_restricted_channels = n_distinct(
+      pair_id[restricted_channel %in% TRUE], na.rm = TRUE
+    ),
+    n_unrestricted_channels = n_distinct(
+      pair_id[unrestricted_channel %in% TRUE], na.rm = TRUE
+    ),
+    n_proceeds_channels = n_distinct(
+      pair_id[allocation_nature == "proceeds_share"], na.rm = TRUE
+    ),
+    .groups = "drop"
+  ) %>%
+  mutate(
+    earmark_status = case_when(
+      n_proceeds_channels == 0L ~ "cost_recovery_only",
+      n_restricted_channels == 0L ~ "assigned_unrestricted",
+      n_unrestricted_channels > 0L ~ "partial_earmark",
+      TRUE ~ "exclusive_earmark"
+    )
+  )
+
+instrument_earmark_status <- instrument_classification_audit %>%
+  select(country, instrument_id, earmark_status)
+
+allowed_statuses <- c(
+  "cost_recovery_only", "assigned_unrestricted",
+  "partial_earmark", "exclusive_earmark"
+)
+
+classification_map_checks <- tibble(
+  check = c(
+    "one classification row per country + instrument_id",
+    "all source instruments classified",
+    "no missing earmark_status",
+    "only requested status categories used",
+    "all expanded source-instrument keys covered"
+  ),
+  passed = c(
+    nrow(instrument_earmark_status) ==
+      n_distinct(paste(
+        instrument_earmark_status$country,
+        instrument_earmark_status$instrument_id
+      )),
+    nrow(instrument_earmark_status) ==
+      n_distinct(paste(
+        SSA_EARMARK_ALLOCATIONS_before$country,
+        SSA_EARMARK_ALLOCATIONS_before$instrument_id
+      )),
+    !any(is.na(instrument_earmark_status$earmark_status)),
+    all(instrument_earmark_status$earmark_status %in% allowed_statuses),
+    nrow(expanded_keys_missing_from_allocation) == 0L
+  )
+)
+
+if (!all(classification_map_checks$passed)) {
+  print(classification_map_checks %>% filter(!passed))
+  stop("Instrument-level classification checks failed.")
+}
+
+incomplete_classification_inputs <- allocation_classification_rows %>%
+  filter(
+    is.na(allocation_nature) |
+      is.na(is_purpose_restricted) |
+      is.na(beneficiary_type)
+  ) %>%
+  distinct(country, instrument_id) %>%
+  left_join(
+    instrument_classification_audit,
+    by = c("country", "instrument_id")
+  ) %>%
+  arrange(country, instrument_id)
+```
+
+```{r display-classification-audit}
+display_table(classification_map_checks)
+display_table(incomplete_classification_inputs)
+```
+
+# 3. Append only `earmark_status`
+
+```{r append-earmark-status}
+append_earmark_status <- function(data, status_map) {
+  original_columns <- names(data)
+
+  data %>%
+    mutate(.original_row_order = row_number()) %>%
+    left_join(
+      status_map,
+      by = c("country", "instrument_id"),
+      relationship = "many-to-one"
+    ) %>%
+    arrange(.original_row_order) %>%
+    select(all_of(original_columns), earmark_status)
+}
+
+SSA_EARMARK_ALLOCATIONS <- append_earmark_status(
+  SSA_EARMARK_ALLOCATIONS_before,
+  instrument_earmark_status
+)
+SSA_EARMARK_ALLOCATIONS_EXPANDED <- append_earmark_status(
+  SSA_EARMARK_ALLOCATIONS_EXPANDED_before,
+  instrument_earmark_status
+)
+
+prewrite_checks <- bind_rows(
+  make_table_checks(
+    "SSA_EARMARK_ALLOCATIONS",
+    SSA_EARMARK_ALLOCATIONS_before,
+    SSA_EARMARK_ALLOCATIONS
+  ),
+  make_table_checks(
+    "SSA_EARMARK_ALLOCATIONS_EXPANDED",
+    SSA_EARMARK_ALLOCATIONS_EXPANDED_before,
+    SSA_EARMARK_ALLOCATIONS_EXPANDED
+  )
+)
+
+if (!all(prewrite_checks$passed)) {
+  print(prewrite_checks %>% filter(!passed))
+  stop("Pre-write preservation checks failed; no output was overwritten.")
+}
+```
+
+# 4. Stage, verify, and overwrite both CSV files
+
+Both candidate files are written to temporary paths in `data/derived`, read back, and fully validated before either target is overwritten. The two-file commit keeps temporary backups and rolls both targets back if a final check fails.
+
+```{r stage-and-commit-outputs}
+stage_paths <- c(
+  allocation = tempfile(
+    pattern = ".SSA_EARMARK_ALLOCATIONS_",
+    tmpdir = dirname(target_paths[["allocation"]]),
+    fileext = ".csv"
+  ),
+  expanded = tempfile(
+    pattern = ".SSA_EARMARK_ALLOCATIONS_EXPANDED_",
+    tmpdir = dirname(target_paths[["expanded"]]),
+    fileext = ".csv"
+  )
+)
+
+write_csv(SSA_EARMARK_ALLOCATIONS, stage_paths[["allocation"]], na = "")
+write_csv(
+  SSA_EARMARK_ALLOCATIONS_EXPANDED,
+  stage_paths[["expanded"]],
+  na = ""
+)
+
+staged_allocation <- read_all_character(stage_paths[["allocation"]])
+staged_expanded <- read_all_character(stage_paths[["expanded"]])
+
+staged_checks <- bind_rows(
+  make_table_checks(
+    "SSA_EARMARK_ALLOCATIONS",
+    SSA_EARMARK_ALLOCATIONS_before,
+    staged_allocation
+  ),
+  make_table_checks(
+    "SSA_EARMARK_ALLOCATIONS_EXPANDED",
+    SSA_EARMARK_ALLOCATIONS_EXPANDED_before,
+    staged_expanded
+  )
+)
+
+if (!all(staged_checks$passed)) {
+  file.remove(stage_paths[file.exists(stage_paths)])
+  print(staged_checks %>% filter(!passed))
+  stop("Staged-file checks failed; no output was overwritten.")
+}
+
+commit_two_files <- function(stage_paths, target_paths) {
+  backup_paths <- c(
+    allocation = tempfile(
+      pattern = ".SSA_EARMARK_ALLOCATIONS_backup_",
+      tmpdir = dirname(target_paths[["allocation"]]),
+      fileext = ".csv"
+    ),
+    expanded = tempfile(
+      pattern = ".SSA_EARMARK_ALLOCATIONS_EXPANDED_backup_",
+      tmpdir = dirname(target_paths[["expanded"]]),
+      fileext = ".csv"
+    )
+  )
+  committed <- FALSE
+
+  on.exit({
+    if (!committed) {
+      for (name in names(target_paths)) {
+        if (file.exists(backup_paths[[name]])) {
+          file.copy(
+            backup_paths[[name]], target_paths[[name]], overwrite = TRUE
+          )
+        }
+      }
+    }
+    file.remove(stage_paths[file.exists(stage_paths)])
+    file.remove(backup_paths[file.exists(backup_paths)])
+  }, add = TRUE)
+
+  backup_ok <- vapply(
+    names(target_paths),
+    function(name) file.copy(
+      target_paths[[name]], backup_paths[[name]], overwrite = FALSE
+    ),
+    logical(1)
+  )
+  if (!all(backup_ok)) {
+    stop("Could not create both temporary rollback copies.")
+  }
+
+  commit_ok <- vapply(
+    names(target_paths),
+    function(name) file.copy(
+      stage_paths[[name]], target_paths[[name]], overwrite = TRUE
+    ),
+    logical(1)
+  )
+  if (!all(commit_ok)) {
+    stop("Could not overwrite both target CSV files.")
+  }
+
+  final_allocation <- read_all_character(target_paths[["allocation"]])
+  final_expanded <- read_all_character(target_paths[["expanded"]])
+  final_checks <- bind_rows(
+    make_table_checks(
+      "SSA_EARMARK_ALLOCATIONS",
+      SSA_EARMARK_ALLOCATIONS_before,
+      final_allocation
+    ),
+    make_table_checks(
+      "SSA_EARMARK_ALLOCATIONS_EXPANDED",
+      SSA_EARMARK_ALLOCATIONS_EXPANDED_before,
+      final_expanded
+    )
+  )
+
+  if (!all(final_checks$passed)) {
+    print(final_checks %>% filter(!passed))
+    stop("Final read-back checks failed; restoring both prior files.")
+  }
+
+  committed <- TRUE
+  list(
+    allocation = final_allocation,
+    expanded = final_expanded,
+    checks = final_checks
+  )
+}
+
+committed_outputs <- commit_two_files(stage_paths, target_paths)
+final_sanity_checks <- committed_outputs$checks
+```
+
+# 5. Inline sanity checks and status distribution
+
+```{r display-final-sanity-checks}
+display_table(final_sanity_checks)
+```
+
+The distribution below counts allocation-source instruments, not allocation rows or expanded Census links.
+
+```{r compute-status-distribution}
+earmark_status_distribution <- bind_rows(
+  instrument_earmark_status %>%
+    count(country, earmark_status, name = "n_instruments"),
+  instrument_earmark_status %>%
+    count(earmark_status, name = "n_instruments") %>%
+    mutate(country = "Overall") %>%
+    select(country, earmark_status, n_instruments)
+) %>%
+  arrange(country == "Overall", country, earmark_status)
+```
+
+```{r display-status-distribution}
+display_table(earmark_status_distribution)
+```
+
+# 6. Run summary
+
+```{r run-summary, results='asis'}
+overall_distribution <- earmark_status_distribution %>%
+  filter(country == "Overall")
+
+cat(
+  "- Files updated: `data/derived/SSA_EARMARK_ALLOCATIONS.csv` and ",
+  "`data/derived/SSA_EARMARK_ALLOCATIONS_EXPANDED.csv`.\n",
+  "- Rows preserved: ", nrow(committed_outputs$allocation),
+  " Allocation rows and ", nrow(committed_outputs$expanded),
+  " expanded rows.\n",
+  "- Allocation-source instruments classified: ",
+  nrow(instrument_earmark_status), ".\n",
+  "- Missing `earmark_status` values: 0 in both files.\n",
+  "- Existing columns, field values, missingness, duplicate-row counts, and ",
+  "row order were unchanged.\n",
+  "- Overall distribution: ",
+  paste0(
+    overall_distribution$earmark_status,
+    " = ", overall_distribution$n_instruments,
+    collapse = "; "
+  ),
+  ".\n",
+  sep = ""
+)
+```

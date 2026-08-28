@@ -1,0 +1,870 @@
+---
+title: "Destination shares within earmarked revenue classes"
+author: "IMF research project"
+date: "`r format(Sys.Date(), '%Y-%m-%d')`"
+output:
+  html_document:
+    toc: true
+    toc_depth: 3
+    df_print: paged
+---
+
+This notebook adds share-based heatmaps to the country-focus analysis without
+changing the existing Sankeys, count heatmaps, or their plot-data files. It
+uses the completed count grids produced by the partial/exclusive earmark
+workflow. Within every country and revenue class, destination shares use the
+total number of statutory allocation links originating from that revenue class
+as the denominator.
+
+The underlying database is a **de jure** legal inventory. These figures do not
+measure collections, transfers, disbursements, or expenditure execution.
+
+```{r setup, include=FALSE}
+if (.Platform$OS.type == "windows") {
+  active_utf8_locale <- Sys.setlocale(
+    "LC_CTYPE",
+    "English_United States.utf8"
+  )
+  if (identical(active_utf8_locale, "")) {
+    stop("A UTF-8 locale is required to preserve accented text.")
+  }
+}
+
+input_path <- knitr::current_input(dir = TRUE)
+project_root <- normalizePath(
+  file.path(dirname(input_path), "..", ".."),
+  winslash = "/",
+  mustWork = TRUE
+)
+
+knitr::opts_knit$set(root.dir = project_root)
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+
+library(dplyr)
+library(purrr)
+library(readr)
+library(stringr)
+library(tibble)
+library(ggplot2)
+library(scales)
+library(knitr)
+
+options(stringsAsFactors = FALSE, scipen = 999)
+
+country_focus_table_dir <- file.path(
+  project_root,
+  "analysis",
+  "tables",
+  "partial_exclusive",
+  "country_focus"
+)
+country_focus_figure_dir <- file.path(
+  project_root,
+  "analysis",
+  "figures",
+  "partial_exclusive",
+  "country_focus"
+)
+
+dir.create(
+  country_focus_table_dir,
+  recursive = TRUE,
+  showWarnings = FALSE
+)
+dir.create(
+  country_focus_figure_dir,
+  recursive = TRUE,
+  showWarnings = FALSE
+)
+
+count_grid_paths <- c(
+  civ_cofog4 = file.path(
+    country_focus_table_dir,
+    "09_civ_revenue_to_cofog4_heatmap.csv"
+  ),
+  civ_division = file.path(
+    country_focus_table_dir,
+    "09_civ_revenue_to_division_heatmap.csv"
+  ),
+  cmr_cofog4 = file.path(
+    country_focus_table_dir,
+    "09_cmr_revenue_to_cofog4_heatmap.csv"
+  ),
+  cmr_division = file.path(
+    country_focus_table_dir,
+    "09_cmr_revenue_to_division_heatmap.csv"
+  )
+)
+
+expected_inputs <- tribble(
+  ~input_name, ~expected_country, ~expected_destination_level,
+  "civ_cofog4", "CIV", "four_digit_function",
+  "civ_division", "CIV", "division",
+  "cmr_cofog4", "CMR", "four_digit_function",
+  "cmr_division", "CMR", "division"
+)
+
+heatmap_colours <- c(
+  "#F3F6F8",
+  "#B9DDD8",
+  "#6FA8C4",
+  "#68A36F",
+  "#17365D"
+)
+
+display_table <- function(data, digits = 6) {
+  if (nrow(data) == 0L) {
+    cat("No rows to report.\n")
+  } else {
+    print(knitr::kable(data, digits = digits, row.names = FALSE))
+    cat("\n")
+  }
+}
+
+theme_share_heatmap <- theme_minimal(base_size = 14) +
+  theme(
+    plot.title.position = "plot",
+    plot.title = element_text(
+      face = "bold",
+      colour = "#222222",
+      size = 18
+    ),
+    plot.subtitle = element_text(
+      colour = "#4D4D4D",
+      size = 13,
+      margin = margin(b = 10)
+    ),
+    plot.caption = element_text(
+      colour = "#666666",
+      hjust = 0,
+      size = 10,
+      margin = margin(t = 10)
+    ),
+    axis.title = element_text(
+      face = "bold",
+      colour = "#333333",
+      size = 13
+    ),
+    axis.text = element_text(colour = "#333333"),
+    legend.title = element_text(face = "bold", size = 11.5),
+    legend.text = element_text(size = 10.5),
+    plot.margin = margin(12, 18, 12, 18)
+  )
+```
+
+# 1. Validate the existing count grids
+
+The four inputs are the exact completed count grids behind the existing
+country-focus heatmaps. They already reflect the partial/exclusive earmark
+filter and the established allocation-link unit. Reading these grids directly
+keeps the prior analytical workflow and all existing outputs unchanged.
+
+```{r load-and-validate-count-grids}
+if (!all(file.exists(count_grid_paths))) {
+  missing_paths <- count_grid_paths[!file.exists(count_grid_paths)]
+  stop(
+    "Required count-grid inputs are missing: ",
+    paste(missing_paths, collapse = "; ")
+  )
+}
+
+input_md5_before <- unname(tools::md5sum(count_grid_paths))
+
+required_columns <- c(
+  "country",
+  "country_name",
+  "destination_level",
+  "revenue_class",
+  "revenue_class_label",
+  "source_plot_label",
+  "source_order",
+  "source_total_links",
+  "destination_code",
+  "destination_name",
+  "destination_label",
+  "destination_plot_label",
+  "destination_order",
+  "destination_total_links",
+  "destination_mapping_status",
+  "n_atomic_links",
+  "destination_heatmap_label",
+  "cell_label"
+)
+
+count_grids <- imap(
+  count_grid_paths,
+  ~read_csv(
+    .x,
+    show_col_types = FALSE,
+    progress = FALSE
+  )
+)
+
+schema_audit <- imap_dfr(count_grids, function(data, input_name) {
+  tibble(
+    input_name,
+    rows = nrow(data),
+    missing_columns = paste(
+      setdiff(required_columns, names(data)),
+      collapse = "; "
+    ),
+    additional_columns = paste(
+      setdiff(names(data), required_columns),
+      collapse = "; "
+    )
+  )
+})
+
+if (any(schema_audit$missing_columns != "")) {
+  print(schema_audit)
+  stop("A required count-grid column is missing.")
+}
+
+identity_audit <- imap_dfr(count_grids, function(data, input_name) {
+  expected <- expected_inputs %>% filter(.data$input_name == .env$input_name)
+
+  tibble(
+    input_name,
+    expected_country = expected$expected_country,
+    observed_countries = paste(sort(unique(data$country)), collapse = "; "),
+    expected_destination_level = expected$expected_destination_level,
+    observed_destination_levels = paste(
+      sort(unique(data$destination_level)),
+      collapse = "; "
+    ),
+    country_passed = identical(
+      sort(unique(data$country)),
+      expected$expected_country
+    ),
+    destination_level_passed = identical(
+      sort(unique(data$destination_level)),
+      expected$expected_destination_level
+    )
+  )
+})
+
+if (!all(identity_audit$country_passed) ||
+    !all(identity_audit$destination_level_passed)) {
+  print(identity_audit)
+  stop("A count grid does not match its expected country or destination level.")
+}
+```
+
+```{r display-input-audit}
+display_table(schema_audit)
+display_table(identity_audit)
+```
+
+```{r validate-count-grid-keys-and-denominators}
+grid_key_audit <- imap_dfr(count_grids, function(data, input_name) {
+  duplicate_keys <- data %>%
+    count(country, revenue_class, destination_code, name = "n") %>%
+    filter(n > 1L)
+
+  tibble(
+    input_name,
+    rows = nrow(data),
+    n_revenue_classes = n_distinct(data$revenue_class),
+    n_destinations = n_distinct(data$destination_code),
+    expected_complete_grid_rows =
+      n_distinct(data$revenue_class) * n_distinct(data$destination_code),
+    duplicate_grid_keys = nrow(duplicate_keys),
+    missing_grid_keys = sum(
+      is.na(data$country) |
+        is.na(data$revenue_class) |
+        is.na(data$destination_code)
+    ),
+    missing_link_counts = sum(is.na(data$n_atomic_links)),
+    negative_link_counts = sum(data$n_atomic_links < 0, na.rm = TRUE)
+  )
+})
+
+source_total_audit <- imap_dfr(count_grids, function(data, input_name) {
+  data %>%
+    group_by(
+      country,
+      revenue_class,
+      revenue_class_label
+    ) %>%
+    summarise(
+      stored_source_totals = n_distinct(source_total_links),
+      stored_source_total = first(source_total_links),
+      computed_source_total = sum(n_atomic_links),
+      denominator_positive = computed_source_total > 0,
+      stored_equals_computed =
+        stored_source_totals == 1L &&
+        stored_source_total == computed_source_total,
+      .groups = "drop"
+    ) %>%
+    mutate(input_name = .env$input_name, .before = 1)
+})
+
+if (any(grid_key_audit$rows != grid_key_audit$expected_complete_grid_rows) ||
+    any(grid_key_audit$duplicate_grid_keys > 0L) ||
+    any(grid_key_audit$missing_grid_keys > 0L) ||
+    any(grid_key_audit$missing_link_counts > 0L) ||
+    any(grid_key_audit$negative_link_counts > 0L) ||
+    any(!source_total_audit$denominator_positive) ||
+    any(!source_total_audit$stored_equals_computed)) {
+  print(grid_key_audit)
+  print(source_total_audit %>% filter(!stored_equals_computed))
+  stop("A count-grid key or source-denominator check failed.")
+}
+```
+
+```{r display-count-grid-audit}
+display_table(grid_key_audit)
+display_table(source_total_audit)
+```
+
+# 2. Compute shares within each revenue class
+
+Each source class is normalized separately. The division grids continue to
+sum the established four-digit destination links within divisions; links are
+not re-deduplicated after aggregation to the division level.
+
+```{r compute-share-grids}
+make_share_grid <- function(count_grid) {
+  count_grid %>%
+    group_by(country, revenue_class) %>%
+    mutate(
+      n_source_allocation_links = sum(n_atomic_links),
+      share_within_revenue_class =
+        n_atomic_links / n_source_allocation_links,
+      cell_label = if_else(
+        share_within_revenue_class > 0,
+        percent(share_within_revenue_class, accuracy = 1),
+        NA_character_
+      )
+    ) %>%
+    ungroup() %>%
+    transmute(
+      country,
+      country_name,
+      destination_level,
+      revenue_class,
+      revenue_class_label,
+      source_plot_label,
+      source_order,
+      n_source_allocation_links,
+      destination_code,
+      destination_name,
+      destination_label,
+      destination_plot_label,
+      destination_heatmap_label,
+      destination_order,
+      destination_mapping_status,
+      n_allocation_links = n_atomic_links,
+      share_within_revenue_class,
+      cell_label
+    ) %>%
+    arrange(source_order, destination_order)
+}
+
+share_grids <- map(count_grids, make_share_grid)
+
+civ_cofog4_share_data <- share_grids$civ_cofog4
+civ_division_share_data <- share_grids$civ_division
+cmr_cofog4_share_data <- share_grids$cmr_cofog4
+cmr_division_share_data <- share_grids$cmr_division
+```
+
+```{r validate-share-grids}
+share_sum_audit <- imap_dfr(share_grids, function(data, input_name) {
+  data %>%
+    group_by(country, revenue_class, revenue_class_label) %>%
+    summarise(
+      n_source_allocation_links = first(n_source_allocation_links),
+      n_destinations = n(),
+      n_positive_destinations = sum(share_within_revenue_class > 0),
+      share_sum = sum(share_within_revenue_class),
+      absolute_deviation_from_one = abs(share_sum - 1),
+      passed = absolute_deviation_from_one < 1e-12,
+      .groups = "drop"
+    ) %>%
+    mutate(input_name = .env$input_name, .before = 1)
+})
+
+share_grid_summary <- imap_dfr(share_grids, function(data, input_name) {
+  tibble(
+    input_name,
+    country = unique(data$country),
+    destination_level = unique(data$destination_level),
+    n_revenue_classes = n_distinct(data$revenue_class),
+    n_destinations = n_distinct(data$destination_code),
+    n_grid_cells = nrow(data),
+    n_positive_cells = sum(data$n_allocation_links > 0),
+    n_zero_cells = sum(data$n_allocation_links == 0),
+    total_allocation_links = sum(data$n_allocation_links),
+    max_share_sum_deviation = max(
+      abs(
+        data %>%
+          group_by(country, revenue_class) %>%
+          summarise(
+            share_sum = sum(share_within_revenue_class),
+            .groups = "drop"
+          ) %>%
+          pull(share_sum) - 1
+      )
+    )
+  )
+})
+
+if (any(!share_sum_audit$passed) ||
+    any(is.na(share_sum_audit$share_sum))) {
+  print(share_sum_audit %>% filter(!passed | is.na(share_sum)))
+  stop("Destination shares do not sum to 100 percent within a revenue class.")
+}
+```
+
+```{r display-share-audit}
+display_table(share_grid_summary)
+display_table(share_sum_audit)
+```
+
+# 3. Define the share heatmap
+
+Zero-share cells remain visible in the complete grid but are left unlabeled;
+most cells are zero, so printing `0%` would obscure the positive shares.
+
+```{r define-share-heatmap-function}
+make_share_heatmap <- function(share_data) {
+  country_name <- unique(share_data$country_name)
+  destination_level <- unique(share_data$destination_level)
+  is_cofog4 <- destination_level == "four_digit_function"
+
+  source_levels <- share_data %>%
+    distinct(source_plot_label, source_order) %>%
+    arrange(source_order) %>%
+    pull(source_plot_label)
+
+  destination_levels <- share_data %>%
+    distinct(destination_heatmap_label, destination_order) %>%
+    arrange(destination_order) %>%
+    pull(destination_heatmap_label)
+
+  plot_data <- share_data %>%
+    mutate(
+      source_plot_label = factor(
+        source_plot_label,
+        levels = rev(source_levels)
+      ),
+      destination_heatmap_label = factor(
+        destination_heatmap_label,
+        levels = destination_levels
+      ),
+      label_colour = if_else(
+        share_within_revenue_class >= 0.40,
+        "#FFFFFF",
+        "#243746"
+      )
+    )
+
+  if (is_cofog4) {
+    title <- paste0(
+      country_name,
+      ": detailed destination mix of earmarked revenue sources"
+    )
+    subtitle <- paste0(
+      "Share of statutory allocation links within each revenue class, ",
+      "by four-digit government function"
+    )
+    x_title <- "Four-digit allocation destination"
+  } else {
+    title <- paste0(
+      country_name,
+      ": broad destination mix of earmarked revenue sources"
+    )
+    subtitle <- paste0(
+      "Share of statutory allocation links within each revenue class, ",
+      "by broad government function"
+    )
+    x_title <- "Broad allocation destination"
+  }
+
+  ggplot(
+    plot_data,
+    aes(
+      x = destination_heatmap_label,
+      y = source_plot_label,
+      fill = share_within_revenue_class
+    )
+  ) +
+    geom_tile(colour = "#FFFFFF", linewidth = 0.45) +
+    geom_text(
+      data = ~filter(.x, share_within_revenue_class > 0),
+      aes(label = cell_label, colour = label_colour),
+      size = if_else(is_cofog4, 3.1, 3.4),
+      fontface = "bold",
+      show.legend = FALSE
+    ) +
+    scale_colour_identity() +
+    scale_fill_gradientn(
+      colours = heatmap_colours,
+      values = rescale(c(0, 0.05, 0.20, 0.50, 1)),
+      limits = c(0, 1),
+      breaks = c(0, 0.25, 0.50, 0.75, 1),
+      labels = label_percent(accuracy = 1),
+      oob = squish,
+      name = "Share of allocation links"
+    ) +
+    guides(
+      fill = guide_colourbar(
+        title.position = "top",
+        barwidth = grid::unit(8, "cm"),
+        barheight = grid::unit(0.45, "cm")
+      )
+    ) +
+    labs(
+      title = title,
+      subtitle = subtitle,
+      x = x_title,
+      y = "Revenue source class",
+      caption = str_wrap(
+        paste0(
+          "Note: Each row distributes the statutory allocation links from ",
+          "that revenue class across destinations. Percentages sum to 100% ",
+          "within each revenue class; zero-share cells are left unlabeled."
+        ),
+        width = 120
+      )
+    ) +
+    theme_share_heatmap +
+    theme(
+      axis.text.x = element_text(
+        angle = if_else(is_cofog4, 70, 42),
+        hjust = 1,
+        vjust = 1,
+        size = if_else(is_cofog4, 9.5, 10)
+      ),
+      axis.text.y = element_text(size = 10.5),
+      panel.grid = element_blank(),
+      legend.position = "bottom",
+      legend.justification = "center"
+    )
+}
+```
+
+# 4. Cote d'Ivoire share heatmaps
+
+```{r build-civ-share-heatmaps}
+civ_cofog4_share_plot <- make_share_heatmap(civ_cofog4_share_data)
+civ_division_share_plot <- make_share_heatmap(civ_division_share_data)
+```
+
+```{r display-civ-cofog4-share-heatmap, fig.width=20, fig.height=11, dpi=150}
+civ_cofog4_share_plot
+```
+
+```{r display-civ-division-share-heatmap, fig.width=15, fig.height=10, dpi=150}
+civ_division_share_plot
+```
+
+# 5. Cameroon share heatmaps
+
+```{r build-cmr-share-heatmaps}
+cmr_cofog4_share_plot <- make_share_heatmap(cmr_cofog4_share_data)
+cmr_division_share_plot <- make_share_heatmap(cmr_division_share_data)
+```
+
+```{r display-cmr-cofog4-share-heatmap, fig.width=17, fig.height=9, dpi=150}
+cmr_cofog4_share_plot
+```
+
+```{r display-cmr-division-share-heatmap, fig.width=14, fig.height=8, dpi=150}
+cmr_division_share_plot
+```
+
+# 6. Export the four additive PNG/CSV pairs
+
+Only new `10_..._share_heatmap` files are written. No existing country-focus
+file is included in the output bundle.
+
+```{r define-output-bundle}
+output_data <- list(
+  "10_civ_revenue_to_cofog4_share_heatmap" =
+    civ_cofog4_share_data,
+  "10_civ_revenue_to_division_share_heatmap" =
+    civ_division_share_data,
+  "10_cmr_revenue_to_cofog4_share_heatmap" =
+    cmr_cofog4_share_data,
+  "10_cmr_revenue_to_division_share_heatmap" =
+    cmr_division_share_data
+)
+
+output_plots <- list(
+  "10_civ_revenue_to_cofog4_share_heatmap" =
+    civ_cofog4_share_plot,
+  "10_civ_revenue_to_division_share_heatmap" =
+    civ_division_share_plot,
+  "10_cmr_revenue_to_cofog4_share_heatmap" =
+    cmr_cofog4_share_plot,
+  "10_cmr_revenue_to_division_share_heatmap" =
+    cmr_division_share_plot
+)
+
+plot_dimensions <- tribble(
+  ~stem, ~width, ~height,
+  "10_civ_revenue_to_cofog4_share_heatmap", 20, 11,
+  "10_civ_revenue_to_division_share_heatmap", 15, 10,
+  "10_cmr_revenue_to_cofog4_share_heatmap", 17, 9,
+  "10_cmr_revenue_to_division_share_heatmap", 14, 8
+)
+
+csv_output_paths <- set_names(
+  file.path(
+    country_focus_table_dir,
+    paste0(names(output_data), ".csv")
+  ),
+  names(output_data)
+)
+png_output_paths <- set_names(
+  file.path(
+    country_focus_figure_dir,
+    paste0(names(output_plots), ".png")
+  ),
+  names(output_plots)
+)
+
+if (any(csv_output_paths %in% count_grid_paths)) {
+  stop("A new share output path overlaps an existing count-grid input.")
+}
+
+all_output_paths <- c(
+  set_names(
+    unname(csv_output_paths),
+    paste0(names(csv_output_paths), "_csv")
+  ),
+  set_names(
+    unname(png_output_paths),
+    paste0(names(png_output_paths), "_png")
+  )
+)
+```
+
+```{r stage-and-verify-output-bundle}
+stage_dir <- tempfile(pattern = "10_country_share_stage_")
+dir.create(stage_dir, recursive = TRUE, showWarnings = FALSE)
+
+stage_csv_paths <- set_names(
+  file.path(stage_dir, paste0(names(output_data), ".csv")),
+  names(output_data)
+)
+stage_png_paths <- set_names(
+  file.path(stage_dir, paste0(names(output_plots), ".png")),
+  names(output_plots)
+)
+stage_output_paths <- c(
+  set_names(
+    unname(stage_csv_paths),
+    paste0(names(stage_csv_paths), "_csv")
+  ),
+  set_names(
+    unname(stage_png_paths),
+    paste0(names(stage_png_paths), "_png")
+  )
+)
+
+iwalk(output_data, function(data, stem) {
+  write_csv(data, stage_csv_paths[[stem]], na = "")
+})
+
+iwalk(output_plots, function(plot_object, stem) {
+  dimensions <- plot_dimensions %>%
+    filter(.data$stem == .env$stem)
+
+  ggsave(
+    filename = stage_png_paths[[stem]],
+    plot = plot_object,
+    width = dimensions$width,
+    height = dimensions$height,
+    units = "in",
+    dpi = 300,
+    bg = "white"
+  )
+})
+
+same_table_values <- function(saved, expected) {
+  if (!identical(names(saved), names(expected)) ||
+      nrow(saved) != nrow(expected)) {
+    return(FALSE)
+  }
+
+  column_checks <- map_lgl(names(expected), function(column_name) {
+    expected_values <- expected[[column_name]]
+    saved_values <- saved[[column_name]]
+
+    if (is.numeric(expected_values)) {
+      isTRUE(all.equal(
+        as.numeric(saved_values),
+        as.numeric(expected_values),
+        tolerance = 1e-12,
+        check.attributes = FALSE
+      ))
+    } else {
+      identical(
+        as.character(saved_values),
+        as.character(expected_values)
+      )
+    }
+  })
+
+  all(column_checks)
+}
+
+staged_csv_checks <- imap_dfr(output_data, function(expected, stem) {
+  saved <- read_csv(
+    stage_csv_paths[[stem]],
+    show_col_types = FALSE,
+    progress = FALSE
+  )
+
+  tibble(
+    output = paste0(stem, ".csv"),
+    rows = nrow(saved),
+    passed = same_table_values(saved, expected)
+  )
+})
+
+staged_png_checks <- imap_dfr(output_plots, function(plot_object, stem) {
+  tibble(
+    output = paste0(stem, ".png"),
+    bytes = file.info(stage_png_paths[[stem]])$size,
+    passed = file.exists(stage_png_paths[[stem]]) &&
+      file.info(stage_png_paths[[stem]])$size > 10000
+  )
+})
+
+if (!all(staged_csv_checks$passed) || !all(staged_png_checks$passed)) {
+  print(staged_csv_checks %>% filter(!passed))
+  print(staged_png_checks %>% filter(!passed))
+  stop("Staged share-heatmap output checks failed; nothing was published.")
+}
+```
+
+```{r commit-output-bundle}
+commit_output_bundle <- function(stage_paths, final_paths) {
+  existed_before <- set_names(
+    file.exists(final_paths),
+    names(final_paths)
+  )
+  backup_dir <- tempfile(pattern = "10_country_share_backup_")
+  dir.create(backup_dir, recursive = TRUE, showWarnings = FALSE)
+  backup_paths <- file.path(backup_dir, basename(final_paths))
+  names(backup_paths) <- names(final_paths)
+  committed <- FALSE
+
+  on.exit({
+    if (!committed) {
+      for (name in names(final_paths)) {
+        if (existed_before[[name]] && file.exists(backup_paths[[name]])) {
+          file.copy(
+            backup_paths[[name]],
+            final_paths[[name]],
+            overwrite = TRUE
+          )
+        } else if (!existed_before[[name]] &&
+                   file.exists(final_paths[[name]])) {
+          file.remove(final_paths[[name]])
+        }
+      }
+    }
+    unlink(stage_dir, recursive = TRUE, force = TRUE)
+    unlink(backup_dir, recursive = TRUE, force = TRUE)
+  }, add = TRUE)
+
+  for (name in names(final_paths)[existed_before]) {
+    if (!file.copy(
+      final_paths[[name]],
+      backup_paths[[name]],
+      overwrite = FALSE
+    )) {
+      stop("Could not create a rollback copy for ", name, ".")
+    }
+  }
+
+  commit_ok <- vapply(
+    names(final_paths),
+    function(name) file.copy(
+      stage_paths[[name]],
+      final_paths[[name]],
+      overwrite = TRUE
+    ),
+    logical(1)
+  )
+
+  if (!all(commit_ok)) {
+    stop("Could not commit every requested share-heatmap output.")
+  }
+
+  final_csv_checks <- imap_dfr(output_data, function(expected, stem) {
+    saved <- read_csv(
+      csv_output_paths[[stem]],
+      show_col_types = FALSE,
+      progress = FALSE
+    )
+
+    tibble(
+      output = paste0(stem, ".csv"),
+      rows = nrow(saved),
+      passed = same_table_values(saved, expected)
+    )
+  })
+
+  final_png_checks <- imap_dfr(output_plots, function(plot_object, stem) {
+    tibble(
+      output = paste0(stem, ".png"),
+      bytes = file.info(png_output_paths[[stem]])$size,
+      passed = file.exists(png_output_paths[[stem]]) &&
+        file.info(png_output_paths[[stem]])$size > 10000
+    )
+  })
+
+  if (!all(final_csv_checks$passed) || !all(final_png_checks$passed)) {
+    print(final_csv_checks %>% filter(!passed))
+    print(final_png_checks %>% filter(!passed))
+    stop("Final share-heatmap checks failed; restoring prior outputs.")
+  }
+
+  committed <- TRUE
+  list(csv_checks = final_csv_checks, png_checks = final_png_checks)
+}
+
+committed_outputs <- commit_output_bundle(
+  stage_output_paths,
+  all_output_paths
+)
+
+input_md5_after <- unname(tools::md5sum(count_grid_paths))
+input_integrity_check <- tibble(
+  input = names(count_grid_paths),
+  md5_before = input_md5_before,
+  md5_after = input_md5_after,
+  unchanged = input_md5_before == input_md5_after
+)
+
+if (!all(input_integrity_check$unchanged)) {
+  print(input_integrity_check)
+  stop("An existing count-grid input changed during the additive workflow.")
+}
+```
+
+```{r display-final-output-checks}
+display_table(committed_outputs$csv_checks)
+display_table(committed_outputs$png_checks)
+display_table(input_integrity_check)
+```
+
+# 7. Run summary
+
+```{r run-summary, results='asis'}
+cat(
+  "- Four additive share heatmaps and four matching CSV files were created.\n",
+  "- Countries included: Cote d'Ivoire (CIV) and Cameroon (CMR).\n",
+  "- Every revenue-class row sums to 100% within numerical tolerance.\n",
+  "- Zero-share cells remain in the complete grids but are not labeled.\n",
+  "- Existing Sankeys, count heatmaps, plot-data files, and code were not ",
+  "included in the write bundle.\n",
+  sep = ""
+)
+```

@@ -1,0 +1,628 @@
+---
+title: "Whether statutory allocation amounts are determined in law"
+author: "IMF research project"
+date: "`r format(Sys.Date(), '%Y-%m-%d')`"
+output:
+  html_document:
+    toc: true
+    toc_depth: 2
+    df_print: paged
+---
+
+This notebook creates the requested `commitment_stated` indicator in memory and
+summarises it at the distinct `country + pair_id` allocation-channel grain. The
+input allocation file is not overwritten, no existing field is changed, and no
+input row is removed. The database describes de jure statutory rules rather
+than actual collections, transfers, disbursements, or expenditure execution.
+
+```{r setup, include=FALSE}
+if (.Platform$OS.type == "windows") {
+  active_utf8_locale <- Sys.setlocale(
+    "LC_CTYPE",
+    "English_United States.utf8"
+  )
+  if (identical(active_utf8_locale, "")) {
+    stop("A UTF-8 locale is required to preserve accented legal text.")
+  }
+}
+
+input_path <- knitr::current_input(dir = TRUE)
+project_root <- normalizePath(
+  file.path(dirname(input_path), "..", ".."),
+  winslash = "/",
+  mustWork = TRUE
+)
+
+knitr::opts_knit$set(root.dir = project_root)
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+
+library(dplyr)
+library(readr)
+library(stringr)
+library(tibble)
+library(knitr)
+
+options(stringsAsFactors = FALSE, scipen = 999)
+
+allocation_path <- file.path(
+  project_root,
+  "data",
+  "derived",
+  "SSA_EARMARK_ALLOCATIONS.csv"
+)
+general_output_path <- file.path(
+  project_root,
+  "analysis",
+  "tables",
+  "general",
+  "commitment_stated_by_country.csv"
+)
+partial_exclusive_output_path <- file.path(
+  project_root,
+  "analysis",
+  "tables",
+  "partial_exclusive",
+  "commitment_stated_by_country.csv"
+)
+
+dir.create(dirname(general_output_path), recursive = TRUE, showWarnings = FALSE)
+dir.create(
+  dirname(partial_exclusive_output_path),
+  recursive = TRUE,
+  showWarnings = FALSE
+)
+
+display_table <- function(data, digits = 6) {
+  if (nrow(data) == 0L) {
+    cat("No rows to report.\n")
+  } else {
+    print(knitr::kable(data, digits = digits, row.names = FALSE))
+    cat("\n")
+  }
+}
+
+is_missing_text <- function(values) {
+  is.na(values) | str_trim(as.character(values)) == ""
+}
+```
+
+# 1. Load and validate the allocation table
+
+All columns are initially read as text so the classification audit can inspect
+the source categories exactly as stored.
+
+```{r load-and-validate-input}
+if (!file.exists(allocation_path)) {
+  stop("Missing input file: ", allocation_path)
+}
+
+input_file_before <- file.info(allocation_path)
+input_md5_before <- unname(tools::md5sum(allocation_path))
+
+SSA_EARMARK_ALLOCATIONS <- read_csv(
+  allocation_path,
+  col_types = cols(.default = col_character()),
+  show_col_types = FALSE,
+  progress = FALSE
+)
+
+required_columns <- c(
+  "country",
+  "pair_id",
+  "share_basis",
+  "earmark_status"
+)
+missing_columns <- setdiff(
+  required_columns,
+  names(SSA_EARMARK_ALLOCATIONS)
+)
+
+input_inventory <- tibble(
+  input_file = "data/derived/SSA_EARMARK_ALLOCATIONS.csv",
+  n_rows = nrow(SSA_EARMARK_ALLOCATIONS),
+  n_columns = ncol(SSA_EARMARK_ALLOCATIONS),
+  n_countries = n_distinct(SSA_EARMARK_ALLOCATIONS$country),
+  n_distinct_country_pair = nrow(
+    distinct(SSA_EARMARK_ALLOCATIONS, country, pair_id)
+  ),
+  missing_required_columns = if_else(
+    length(missing_columns) == 0L,
+    NA_character_,
+    paste(missing_columns, collapse = "; ")
+  )
+)
+
+if (length(missing_columns) > 0L) {
+  print(input_inventory)
+  stop(
+    "Required allocation columns are missing: ",
+    paste(missing_columns, collapse = "; ")
+  )
+}
+
+missing_key_rows <- SSA_EARMARK_ALLOCATIONS %>%
+  summarise(
+    missing_country_rows = sum(is_missing_text(country)),
+    missing_pair_id_rows = sum(is_missing_text(pair_id))
+  )
+
+if (any(unlist(missing_key_rows) > 0L)) {
+  print(missing_key_rows)
+  stop("Missing country or pair_id prevents complete allocation-channel counts.")
+}
+```
+
+```{r display-input-inventory}
+display_table(input_inventory)
+display_table(missing_key_rows)
+```
+
+# 2. Audit `share_basis` before classification
+
+The only expected non-missing values are `stated`,
+`whole_proceeds_implied`, and `deferred_arrete`. Missing values are reported
+explicitly because the requested rule classifies them as zero.
+
+```{r audit-share-basis}
+expected_share_basis <- c(
+  "stated",
+  "whole_proceeds_implied",
+  "deferred_arrete"
+)
+
+share_basis_audit <- SSA_EARMARK_ALLOCATIONS %>%
+  transmute(
+    share_basis_value = if_else(
+      is_missing_text(share_basis),
+      "Missing",
+      str_trim(share_basis)
+    )
+  ) %>%
+  count(share_basis_value, name = "n_rows") %>%
+  mutate(
+    classification_rule = case_when(
+      share_basis_value %in% c(
+        "stated",
+        "whole_proceeds_implied"
+      ) ~ "commitment_stated = 1",
+      share_basis_value %in% c(
+        "deferred_arrete",
+        "Missing"
+      ) ~ "commitment_stated = 0",
+      TRUE ~ "unexpected; not classified"
+    ),
+    category_status = if_else(
+      share_basis_value == "Missing" |
+        share_basis_value %in% expected_share_basis,
+      "expected",
+      "unexpected"
+    )
+  ) %>%
+  arrange(category_status, share_basis_value)
+
+unexpected_share_basis <- share_basis_audit %>%
+  filter(category_status == "unexpected")
+```
+
+```{r display-share-basis-audit}
+display_table(share_basis_audit)
+display_table(unexpected_share_basis)
+```
+
+```{r stop-on-unexpected-share-basis}
+if (nrow(unexpected_share_basis) > 0L) {
+  stop(
+    "Unexpected share_basis values were reported above. ",
+    "No classification or output was created."
+  )
+}
+```
+
+# 3. Create `commitment_stated` without changing the input fields
+
+```{r create-commitment-stated}
+original_column_names <- names(SSA_EARMARK_ALLOCATIONS)
+
+SSA_EARMARK_ALLOCATIONS_WITH_COMMITMENT <-
+  SSA_EARMARK_ALLOCATIONS %>%
+  mutate(
+    commitment_stated = case_when(
+      str_trim(share_basis) %in% c(
+        "stated",
+        "whole_proceeds_implied"
+      ) ~ 1L,
+      str_trim(share_basis) == "deferred_arrete" |
+        is_missing_text(share_basis) ~ 0L,
+      TRUE ~ NA_integer_
+    )
+  )
+
+row_level_preservation <- tibble(
+  check = c(
+    "Rows before equal rows after",
+    "Existing columns remain first and in their original order",
+    "Existing field values are unchanged",
+    "commitment_stated has no missing values"
+  ),
+  passed = c(
+    nrow(SSA_EARMARK_ALLOCATIONS_WITH_COMMITMENT) ==
+      nrow(SSA_EARMARK_ALLOCATIONS),
+    identical(
+      names(SSA_EARMARK_ALLOCATIONS_WITH_COMMITMENT),
+      c(original_column_names, "commitment_stated")
+    ),
+    all(vapply(
+      original_column_names,
+      function(field) {
+        identical(
+          SSA_EARMARK_ALLOCATIONS_WITH_COMMITMENT[[field]],
+          SSA_EARMARK_ALLOCATIONS[[field]]
+        )
+      },
+      logical(1)
+    )),
+    !any(is.na(
+      SSA_EARMARK_ALLOCATIONS_WITH_COMMITMENT$commitment_stated
+    ))
+  )
+)
+
+if (!all(row_level_preservation$passed)) {
+  print(row_level_preservation)
+  stop("Row-level preservation failed after deriving commitment_stated.")
+}
+```
+
+```{r display-row-level-preservation}
+display_table(row_level_preservation)
+```
+
+# 4. Establish the distinct allocation-channel grain
+
+Repeated evidence rows must agree on the derived indicator and on
+`earmark_status`. The notebook stops rather than choosing a value if one
+`country + pair_id` has a conflict.
+
+```{r prepare-pair-level-data}
+pair_commitment_conflicts <-
+  SSA_EARMARK_ALLOCATIONS_WITH_COMMITMENT %>%
+  distinct(country, pair_id, commitment_stated) %>%
+  count(country, pair_id, name = "n_commitment_values") %>%
+  filter(n_commitment_values > 1L)
+
+pair_status_conflicts <-
+  SSA_EARMARK_ALLOCATIONS_WITH_COMMITMENT %>%
+  mutate(
+    earmark_status_audit = if_else(
+      is_missing_text(earmark_status),
+      "Missing",
+      str_trim(earmark_status)
+    )
+  ) %>%
+  distinct(country, pair_id, earmark_status_audit) %>%
+  count(country, pair_id, name = "n_earmark_status_values") %>%
+  filter(n_earmark_status_values > 1L)
+
+if (nrow(pair_commitment_conflicts) > 0L) {
+  print(pair_commitment_conflicts)
+  stop("A country + pair_id has conflicting commitment_stated values.")
+}
+if (nrow(pair_status_conflicts) > 0L) {
+  print(pair_status_conflicts)
+  stop("A country + pair_id has conflicting earmark_status values.")
+}
+
+allocation_pairs_full <-
+  SSA_EARMARK_ALLOCATIONS_WITH_COMMITMENT %>%
+  distinct(country, pair_id, commitment_stated)
+
+if (nrow(allocation_pairs_full) !=
+    nrow(distinct(allocation_pairs_full, country, pair_id))) {
+  stop("The full pair table is not unique at country + pair_id.")
+}
+
+partial_exclusive_statuses <- c(
+  "partial_earmark",
+  "exclusive_earmark"
+)
+
+SSA_EARMARK_ALLOCATIONS_PARTIAL_EXCLUSIVE <-
+  SSA_EARMARK_ALLOCATIONS_WITH_COMMITMENT %>%
+  filter(str_trim(earmark_status) %in% partial_exclusive_statuses)
+
+allocation_pairs_partial_exclusive <-
+  SSA_EARMARK_ALLOCATIONS_PARTIAL_EXCLUSIVE %>%
+  distinct(country, pair_id, commitment_stated)
+
+if (nrow(allocation_pairs_partial_exclusive) !=
+    nrow(distinct(
+      allocation_pairs_partial_exclusive,
+      country,
+      pair_id
+    ))) {
+  stop("The filtered pair table is not unique at country + pair_id.")
+}
+
+filter_audit <- tibble(
+  analysis_scope = c(
+    "All statutory allocations",
+    "Partial and exclusive earmark instruments"
+  ),
+  filter_condition = c(
+    "None",
+    "earmark_status in partial_earmark or exclusive_earmark"
+  ),
+  n_rows = c(
+    nrow(SSA_EARMARK_ALLOCATIONS_WITH_COMMITMENT),
+    nrow(SSA_EARMARK_ALLOCATIONS_PARTIAL_EXCLUSIVE)
+  ),
+  n_distinct_country_pair = c(
+    nrow(allocation_pairs_full),
+    nrow(allocation_pairs_partial_exclusive)
+  ),
+  n_countries = c(
+    n_distinct(allocation_pairs_full$country),
+    n_distinct(allocation_pairs_partial_exclusive$country)
+  )
+)
+```
+
+```{r display-pair-and-filter-audits}
+display_table(pair_commitment_conflicts)
+display_table(pair_status_conflicts)
+display_table(filter_audit)
+```
+
+# 5. Country summary — all statutory allocations
+
+```{r compute-general-country-summary}
+make_country_summary <- function(pair_data) {
+  pair_data %>%
+    group_by(country) %>%
+    summarise(
+      n_allocations = n(),
+      n_commitment_stated_1 = sum(commitment_stated == 1L),
+      n_commitment_stated_0 = sum(commitment_stated == 0L),
+      share_commitment_stated = if_else(
+        n_allocations > 0L,
+        n_commitment_stated_1 / n_allocations,
+        NA_real_
+      ),
+      .groups = "drop"
+    ) %>%
+    arrange(country)
+}
+
+commitment_stated_general <- make_country_summary(allocation_pairs_full)
+```
+
+```{r display-general-country-summary}
+display_table(commitment_stated_general)
+```
+
+# 6. Country summary — partial and exclusive earmarks
+
+```{r compute-partial-exclusive-country-summary}
+commitment_stated_partial_exclusive <- make_country_summary(
+  allocation_pairs_partial_exclusive
+)
+```
+
+```{r display-partial-exclusive-country-summary}
+display_table(commitment_stated_partial_exclusive)
+```
+
+# 7. Inline sanity checks
+
+```{r validate-results}
+make_scope_checks <- function(pair_data, country_summary, scope_name) {
+  tibble(
+    analysis_scope = scope_name,
+    total_distinct_country_pair = nrow(pair_data),
+    n_commitment_stated_1 = sum(pair_data$commitment_stated == 1L),
+    n_commitment_stated_0 = sum(pair_data$commitment_stated == 0L),
+    country_counts_reconcile =
+      sum(country_summary$n_allocations) == nrow(pair_data),
+    commitment_counts_reconcile = all(
+      country_summary$n_commitment_stated_1 +
+        country_summary$n_commitment_stated_0 ==
+        country_summary$n_allocations
+    ),
+    shares_reconcile = all(
+      abs(
+        country_summary$share_commitment_stated -
+          country_summary$n_commitment_stated_1 /
+            country_summary$n_allocations
+      ) < 1e-12
+    ),
+    pair_keys_unique =
+      nrow(pair_data) == nrow(distinct(pair_data, country, pair_id))
+  )
+}
+
+sanity_checks <- bind_rows(
+  make_scope_checks(
+    allocation_pairs_full,
+    commitment_stated_general,
+    "All statutory allocations"
+  ),
+  make_scope_checks(
+    allocation_pairs_partial_exclusive,
+    commitment_stated_partial_exclusive,
+    "Partial and exclusive earmark instruments"
+  )
+) %>%
+  mutate(
+    no_unexpected_share_basis_classified =
+      nrow(unexpected_share_basis) == 0L,
+    no_pair_level_commitment_conflicts =
+      nrow(pair_commitment_conflicts) == 0L
+  )
+
+fatal_check_columns <- c(
+  "country_counts_reconcile",
+  "commitment_counts_reconcile",
+  "shares_reconcile",
+  "pair_keys_unique",
+  "no_unexpected_share_basis_classified",
+  "no_pair_level_commitment_conflicts"
+)
+
+if (!all(unlist(sanity_checks[fatal_check_columns]))) {
+  print(sanity_checks)
+  stop("One or more commitment-stated sanity checks failed.")
+}
+```
+
+```{r display-sanity-checks}
+display_table(sanity_checks)
+```
+
+# 8. Export and verify the requested tables
+
+```{r export-and-verify}
+expected_output_columns <- c(
+  "country",
+  "n_allocations",
+  "n_commitment_stated_1",
+  "n_commitment_stated_0",
+  "share_commitment_stated"
+)
+
+stopifnot(
+  identical(names(commitment_stated_general), expected_output_columns),
+  identical(
+    names(commitment_stated_partial_exclusive),
+    expected_output_columns
+  )
+)
+
+write_csv(commitment_stated_general, general_output_path, na = "")
+write_csv(
+  commitment_stated_partial_exclusive,
+  partial_exclusive_output_path,
+  na = ""
+)
+
+output_col_types <- cols(
+  country = col_character(),
+  n_allocations = col_integer(),
+  n_commitment_stated_1 = col_integer(),
+  n_commitment_stated_0 = col_integer(),
+  share_commitment_stated = col_double()
+)
+
+general_saved <- read_csv(
+  general_output_path,
+  col_types = output_col_types,
+  show_col_types = FALSE,
+  progress = FALSE
+)
+partial_exclusive_saved <- read_csv(
+  partial_exclusive_output_path,
+  col_types = output_col_types,
+  show_col_types = FALSE,
+  progress = FALSE
+)
+
+output_verification <- tibble(
+  output_file = c(
+    "analysis/tables/general/commitment_stated_by_country.csv",
+    paste0(
+      "analysis/tables/partial_exclusive/",
+      "commitment_stated_by_country.csv"
+    )
+  ),
+  file_exists = c(
+    file.exists(general_output_path),
+    file.exists(partial_exclusive_output_path)
+  ),
+  rows_expected = c(
+    nrow(commitment_stated_general),
+    nrow(commitment_stated_partial_exclusive)
+  ),
+  rows_saved = c(
+    nrow(general_saved),
+    nrow(partial_exclusive_saved)
+  ),
+  exact_columns = c(
+    identical(names(general_saved), expected_output_columns),
+    identical(
+      names(partial_exclusive_saved),
+      expected_output_columns
+    )
+  ),
+  exact_values = c(
+    isTRUE(all.equal(
+      general_saved,
+      commitment_stated_general,
+      check.attributes = FALSE
+    )),
+    isTRUE(all.equal(
+      partial_exclusive_saved,
+      commitment_stated_partial_exclusive,
+      check.attributes = FALSE
+    ))
+  )
+)
+
+input_file_after <- file.info(allocation_path)
+input_md5_after <- unname(tools::md5sum(allocation_path))
+input_preservation <- tibble(
+  check = c(
+    "Input MD5 unchanged",
+    "Input size unchanged",
+    "Input modification time unchanged"
+  ),
+  passed = c(
+    identical(input_md5_before, input_md5_after),
+    identical(input_file_before$size, input_file_after$size),
+    identical(input_file_before$mtime, input_file_after$mtime)
+  )
+)
+
+if (!all(output_verification$file_exists) ||
+    !all(output_verification$rows_expected ==
+         output_verification$rows_saved) ||
+    !all(output_verification$exact_columns) ||
+    !all(output_verification$exact_values) ||
+    !all(input_preservation$passed)) {
+  print(output_verification)
+  print(input_preservation)
+  stop("Output or input-preservation verification failed.")
+}
+```
+
+```{r display-output-verification}
+display_table(output_verification)
+display_table(input_preservation)
+```
+
+# 9. Run summary
+
+```{r run-summary}
+cat(
+  "- Unexpected share_basis categories: ",
+  nrow(unexpected_share_basis), ".\n",
+  "- Full allocation scope: ",
+  nrow(allocation_pairs_full), " distinct country + pair_id channels; ",
+  sum(allocation_pairs_full$commitment_stated == 1L),
+  " with commitment_stated = 1 and ",
+  sum(allocation_pairs_full$commitment_stated == 0L),
+  " with commitment_stated = 0.\n",
+  "- Partial/exclusive scope: ",
+  nrow(allocation_pairs_partial_exclusive),
+  " distinct country + pair_id channels; ",
+  sum(allocation_pairs_partial_exclusive$commitment_stated == 1L),
+  " with commitment_stated = 1 and ",
+  sum(allocation_pairs_partial_exclusive$commitment_stated == 0L),
+  " with commitment_stated = 0.\n",
+  "- Pair-level conflicts: ",
+  nrow(pair_commitment_conflicts), ".\n",
+  "- Country shares and counts reconcile: ",
+  all(unlist(sanity_checks[fatal_check_columns])), ".\n",
+  "- Input allocation file unchanged: ",
+  all(input_preservation$passed), ".\n",
+  sep = ""
+)
+```

@@ -1,0 +1,2074 @@
+---
+title: "SSA revenue instruments: pooled data and initial descriptives"
+author: "IMF research project"
+date: "`r format(Sys.Date(), '%Y-%m-%d')`"
+output:
+  html_document:
+    toc: true
+    toc_depth: 3
+    df_print: paged
+---
+
+This notebook builds the pooled de jure Census and statutory-allocation datasets from the final country-level XLSX workbooks. It does not measure actual collections, transfers, disbursements, or expenditure execution. It does not create plots.
+
+The analytical keys are always country-specific: `country + instrument_id` for Census instruments and `country + pair_id` for allocation channels. No reference is ever matched across countries.
+
+```{r setup, include=FALSE}
+input_path <- knitr::current_input(dir = TRUE)
+project_root <- normalizePath(
+  file.path(dirname(input_path), "..", ".."),
+  winslash = "/",
+  mustWork = TRUE
+)
+
+knitr::opts_knit$set(root.dir = project_root)
+knitr::opts_chunk$set(
+  echo = TRUE,
+  warning = FALSE,
+  message = FALSE,
+  fig.path = file.path(project_root, "figures", "01_initial_descriptives-")
+)
+
+library(readxl)
+library(dplyr)
+library(tidyr)
+library(purrr)
+library(stringr)
+library(readr)
+library(tibble)
+library(jsonlite)
+library(knitr)
+
+options(stringsAsFactors = FALSE, scipen = 999)
+
+country_root <- file.path(project_root, "countries")
+derived_dir <- file.path(project_root, "data", "derived")
+tables_dir <- file.path(project_root, "analysis", "tables")
+dir.create(derived_dir, recursive = TRUE, showWarnings = FALSE)
+dir.create(tables_dir, recursive = TRUE, showWarnings = FALSE)
+
+census_output_path <- file.path(derived_dir, "SSA_CENSUS_STACKED.csv")
+allocation_output_path <- file.path(
+  derived_dir,
+  "SSA_EARMARK_ALLOCATIONS_STACKED.csv"
+)
+workbook_output_path <- file.path(
+  tables_dir,
+  "01_initial_descriptives.xlsx"
+)
+
+manifest_path <- Sys.getenv(
+  "INITIAL_DESC_MANIFEST",
+  unset = file.path(tempdir(), "01_initial_descriptives_tables.json")
+)
+dir.create(dirname(manifest_path), recursive = TRUE, showWarnings = FALSE)
+
+census_columns <- c(
+  "evidence_id", "row_type", "country", "instrument_id", "document_id",
+  "document_type", "document_year", "legal_article", "page_start", "page_end",
+  "official_name", "official_name_underspecified", "in_force", "tax_instrument",
+  "tax_base_detail", "instrument_label_verbatim", "instrument_nature",
+  "base_sector", "base_division", "is_penalty", "rate_value",
+  "rate_is_schedule", "rate_schedule_detail", "rate_type", "rate_basis",
+  "rate_base_quantum", "rate_reference_instrument", "change_type",
+  "enabling_reference", "evidence_status"
+)
+
+allocation_columns <- c(
+  "evidence_id", "row_type", "country", "instrument_id", "pair_id",
+  "document_id", "document_type", "document_year", "legal_article",
+  "page_start", "page_end", "official_name", "destination",
+  "beneficiary_type", "allocation_nature", "share_value",
+  "share_is_schedule", "share_schedule_detail", "share_type", "share_basis",
+  "share_level", "share_pool", "is_purpose_restricted", "assignment_type",
+  "census_ref", "destination_function", "destination_function_basis",
+  "destination_function_multi", "destination_function_detail"
+)
+
+required_columns <- list(
+  Census = census_columns,
+  Allocation = allocation_columns
+)
+
+required_sheets <- c(
+  Census = "census_rows",
+  Allocation = "evidence_table"
+)
+
+numeric_fields <- c("rate_value", "rate_base_quantum", "share_value")
+integer_fields <- c("page_start", "page_end", "share_level")
+binary_fields <- c(
+  "official_name_underspecified", "in_force", "is_penalty",
+  "rate_is_schedule", "share_is_schedule", "is_purpose_restricted",
+  "destination_function_multi"
+)
+flexible_text_fields <- c(
+  "document_year", "base_division", "destination_function",
+  "destination_function_detail"
+)
+
+target_type_for <- function(field) {
+  case_when(
+    field %in% numeric_fields ~ "numeric",
+    field %in% integer_fields ~ "integer",
+    field %in% binary_fields ~ "binary_0_1",
+    TRUE ~ "text"
+  )
+}
+
+is_blank_cell <- function(x) {
+  length(x) == 0L || all(is.na(x)) ||
+    (is.character(x) && length(x) == 1L && str_trim(x) == "")
+}
+
+cell_storage_type <- function(x) {
+  if (is_blank_cell(x)) {
+    return(NA_character_)
+  }
+  class(x)[1]
+}
+
+cell_to_text <- function(x) {
+  if (is_blank_cell(x)) {
+    return(NA_character_)
+  }
+  if (length(x) != 1L) {
+    return(NA_character_)
+  }
+  if (inherits(x, "POSIXt")) {
+    return(format(x, "%Y-%m-%d %H:%M:%S", tz = "UTC"))
+  }
+  if (is.character(x)) {
+    return(x)
+  }
+  if (is.numeric(x)) {
+    return(format(x, scientific = FALSE, trim = TRUE, digits = 15))
+  }
+  if (is.logical(x)) {
+    return(if_else(x, "TRUE", "FALSE"))
+  }
+  as.character(x)
+}
+
+is_numeric_text <- function(x) {
+  !is.na(x) && str_detect(
+    x,
+    "^[+-]?(?:[0-9]+\\.?[0-9]*|\\.[0-9]+)(?:[eE][+-]?[0-9]+)?$"
+  ) && is.finite(suppressWarnings(as.numeric(x)))
+}
+
+is_integer_text <- function(x) {
+  if (!is_numeric_text(x)) {
+    return(FALSE)
+  }
+  value <- suppressWarnings(as.numeric(x))
+  abs(value - round(value)) < 1e-9
+}
+
+is_binary_text <- function(x) {
+  !is.na(x) && tolower(x) %in% c("0", "1", "true", "false")
+}
+
+cell_is_compatible <- function(x, field, target_type) {
+  if (is_blank_cell(x)) {
+    return(TRUE)
+  }
+  storage_type <- cell_storage_type(x)
+  text_value <- cell_to_text(x)
+
+  if (target_type == "text") {
+    if (field %in% flexible_text_fields) {
+      return(storage_type %in% c("character", "numeric", "integer"))
+    }
+    return(storage_type == "character")
+  }
+  if (target_type == "numeric") {
+    return(is_numeric_text(text_value))
+  }
+  if (target_type == "integer") {
+    return(is_integer_text(text_value))
+  }
+  if (target_type == "binary_0_1") {
+    return(is_binary_text(text_value))
+  }
+  FALSE
+}
+
+convert_list_column <- function(column, field, target_type) {
+  text_values <- map_chr(column, cell_to_text)
+
+  if (target_type == "text") {
+    return(text_values)
+  }
+  if (target_type == "numeric") {
+    return(if_else(
+      is.na(text_values),
+      NA_real_,
+      suppressWarnings(as.numeric(text_values))
+    ))
+  }
+  if (target_type == "integer") {
+    return(if_else(
+      is.na(text_values),
+      NA_integer_,
+      as.integer(round(suppressWarnings(as.numeric(text_values))))
+    ))
+  }
+  if (target_type == "binary_0_1") {
+    return(case_when(
+      is.na(text_values) ~ NA_integer_,
+      tolower(text_values) %in% c("1", "true") ~ 1L,
+      tolower(text_values) %in% c("0", "false") ~ 0L,
+      TRUE ~ NA_integer_
+    ))
+  }
+  stop("Unknown target type: ", target_type)
+}
+
+is_missing_value <- function(x) {
+  if (is.character(x)) {
+    return(is.na(x) | str_trim(x) == "")
+  }
+  is.na(x)
+}
+
+display_table <- function(x, digits = 4) {
+  if (nrow(x) == 0L) {
+    cat("No rows to report.\n\n")
+  }
+  knitr::kable(x, digits = digits, row.names = FALSE)
+}
+```
+
+# 1. Source discovery and schema validation
+
+The recursive search is anchored to the two canonical country output locations specified in the methodology. Generated pooled outputs, temporary Excel files, reconciled/intermediate workbooks, and the COFOG CSV are not candidate country inputs.
+
+```{r discover-files}
+all_country_xlsx <- list.files(
+  country_root,
+  pattern = "\\.xlsx$",
+  recursive = TRUE,
+  full.names = TRUE,
+  ignore.case = TRUE
+)
+
+all_country_paths <- str_replace_all(
+  normalizePath(all_country_xlsx, winslash = "/", mustWork = TRUE),
+  fixed(project_root),
+  ""
+) %>%
+  str_remove("^/")
+
+candidate_inventory <- tibble(
+  relative_path = all_country_paths,
+  file_name = basename(all_country_paths),
+  country = str_match(all_country_paths, "^countries/([^/]+)/")[, 2],
+  dataset = case_when(
+    str_detect(
+      all_country_paths,
+      regex(
+        "^countries/[^/]+/outputs/extract/[^/]+_CENSUS\\.xlsx$",
+        ignore_case = TRUE
+      )
+    ) ~ "Census",
+    str_detect(
+      all_country_paths,
+      regex(
+        paste0(
+          "^countries/[^/]+/outputs/allocations/",
+          "[^/]+_EARMARKS?_ALLOCATIONS?\\.xlsx$"
+        ),
+        ignore_case = TRUE
+      )
+    ) ~ "Allocation",
+    TRUE ~ NA_character_
+  ),
+  is_temporary = str_starts(file_name, "~$")
+) %>%
+  filter(!is.na(dataset), !is_temporary) %>%
+  mutate(
+    absolute_path = file.path(project_root, relative_path),
+    required_sheet = unname(required_sheets[dataset])
+  ) %>%
+  arrange(country, dataset, relative_path)
+
+duplicate_candidates <- candidate_inventory %>%
+  count(country, dataset, name = "candidate_count") %>%
+  filter(candidate_count > 1L)
+
+if (nrow(duplicate_candidates) > 0L) {
+  duplicate_detail <- candidate_inventory %>%
+    semi_join(duplicate_candidates, by = c("country", "dataset")) %>%
+    select(country, dataset, relative_path)
+  print(duplicate_detail)
+  stop(
+    "Several plausible final files exist for at least one country and dataset. ",
+    "No file was selected."
+  )
+}
+
+inspect_schema <- function(dataset, country, absolute_path, relative_path,
+                           required_sheet) {
+  expected <- required_columns[[dataset]]
+
+  tryCatch({
+    sheets <- excel_sheets(absolute_path)
+    if (!required_sheet %in% sheets) {
+      return(tibble(
+        dataset = dataset,
+        country = country,
+        relative_path = relative_path,
+        sheet = NA_character_,
+        source_rows = NA_integer_,
+        source_columns = NA_integer_,
+        missing_required = paste(expected, collapse = "; "),
+        additional_columns = NA_character_,
+        duplicate_headers = NA_character_,
+        required_order_matches = FALSE,
+        schema_status = "failed_missing_sheet",
+        schema_reason = paste0("Required sheet not found: ", required_sheet)
+      ))
+    }
+
+    header_only <- read_excel(
+      absolute_path,
+      sheet = required_sheet,
+      n_max = 0,
+      .name_repair = "minimal"
+    )
+    headers <- names(header_only)
+    duplicate_headers <- unique(headers[duplicated(headers)])
+    missing_required <- setdiff(expected, headers)
+    additional_columns <- setdiff(headers, expected)
+    source_rows <- nrow(read_excel(
+      absolute_path,
+      sheet = required_sheet,
+      col_types = "list",
+      trim_ws = FALSE,
+      .name_repair = "minimal"
+    ))
+    present_required <- headers[headers %in% expected]
+    expected_present <- expected[expected %in% headers]
+
+    schema_ok <- length(missing_required) == 0L &&
+      length(duplicate_headers) == 0L
+
+    schema_reason_value <- if (length(missing_required) > 0L) {
+      paste0(
+        "Missing required columns: ",
+        paste(missing_required, collapse = "; ")
+      )
+    } else if (length(duplicate_headers) > 0L) {
+      paste0(
+        "Duplicated headers: ",
+        paste(duplicate_headers, collapse = "; ")
+      )
+    } else {
+      NA_character_
+    }
+
+    tibble(
+      dataset = dataset,
+      country = country,
+      relative_path = relative_path,
+      sheet = required_sheet,
+      source_rows = source_rows,
+      source_columns = length(headers),
+      missing_required = if_else(
+        length(missing_required) == 0L,
+        NA_character_,
+        paste(missing_required, collapse = "; ")
+      ),
+      additional_columns = if_else(
+        length(additional_columns) == 0L,
+        NA_character_,
+        paste(additional_columns, collapse = "; ")
+      ),
+      duplicate_headers = if_else(
+        length(duplicate_headers) == 0L,
+        NA_character_,
+        paste(duplicate_headers, collapse = "; ")
+      ),
+      required_order_matches = identical(present_required, expected_present),
+      schema_status = if_else(schema_ok, "schema_ok", "failed_schema"),
+      schema_reason = schema_reason_value
+    )
+  }, error = function(e) {
+    tibble(
+      dataset = dataset,
+      country = country,
+      relative_path = relative_path,
+      sheet = required_sheet,
+      source_rows = NA_integer_,
+      source_columns = NA_integer_,
+      missing_required = NA_character_,
+      additional_columns = NA_character_,
+      duplicate_headers = NA_character_,
+      required_order_matches = FALSE,
+      schema_status = "failed_read",
+      schema_reason = conditionMessage(e)
+    )
+  })
+}
+
+schema_audit <- pmap_dfr(
+  candidate_inventory %>%
+    select(dataset, country, absolute_path, relative_path, required_sheet),
+  inspect_schema
+)
+```
+
+## File discovery result
+
+```{r print-schema-audit}
+display_table(schema_audit)
+```
+
+# 2. Type validation and pooled stacks
+
+Required columns are read as typed Excel cells first. Storage types and semantic compatibility are audited before any common conversion. Code fields whose Excel storage legitimately varies between numeric and text are converted explicitly to text without padding or recoding their values. Any incompatible non-missing value fails the entire source file.
+
+```{r load-and-stack}
+schema_valid_files <- candidate_inventory %>%
+  inner_join(
+    schema_audit %>%
+      filter(schema_status == "schema_ok") %>%
+      select(dataset, country, relative_path, sheet),
+    by = c("dataset", "country", "relative_path")
+  )
+
+load_validated_file <- function(dataset, country, absolute_path, relative_path,
+                                required_sheet, sheet) {
+  expected <- required_columns[[dataset]]
+
+  tryCatch({
+    raw_data <- read_excel(
+      absolute_path,
+      sheet = sheet,
+      col_types = "list",
+      trim_ws = FALSE,
+      .name_repair = "minimal"
+    ) %>%
+      select(all_of(expected))
+
+    field_audit <- map_dfr(expected, function(field) {
+      target_type <- target_type_for(field)
+      column <- raw_data[[field]]
+      storage_types <- map_chr(column, cell_storage_type)
+      compatible <- map_lgl(
+        column,
+        cell_is_compatible,
+        field = field,
+        target_type = target_type
+      )
+
+      tibble(
+        dataset = dataset,
+        country = country,
+        relative_path = relative_path,
+        field = field,
+        target_type = target_type,
+        observed_storage_types = {
+          observed <- sort(unique(na.omit(storage_types)))
+          if (length(observed) == 0L) "all_missing" else paste(observed, collapse = "; ")
+        },
+        n_nonmissing = sum(!is.na(storage_types)),
+        n_incompatible = sum(!compatible),
+        conversion_rule = case_when(
+          target_type == "text" && field %in% flexible_text_fields ~
+            "explicit character conversion; no padding or recoding",
+          target_type == "text" ~ "preserve character value exactly",
+          target_type == "numeric" ~ "strict numeric parse",
+          target_type == "integer" ~ "strict whole-number parse",
+          target_type == "binary_0_1" ~ "normalize 0/1 or TRUE/FALSE to integer 0/1",
+          TRUE ~ NA_character_
+        ),
+        type_status = if_else(
+          sum(!compatible) == 0L,
+          "compatible",
+          "incompatible"
+        )
+      )
+    })
+
+    if (any(field_audit$n_incompatible > 0L)) {
+      return(list(
+        status = "failed_type",
+        reason = "One or more required fields contained incompatible values",
+        n_rows = nrow(raw_data),
+        data = NULL,
+        type_audit = field_audit
+      ))
+    }
+
+    converted_columns <- map(expected, function(field) {
+      convert_list_column(
+        raw_data[[field]],
+        field,
+        target_type_for(field)
+      )
+    })
+    names(converted_columns) <- expected
+    converted_data <- as_tibble(converted_columns)
+
+    observed_countries <- converted_data$country[
+      !is_missing_value(converted_data$country)
+    ] %>%
+      unique()
+
+    country_ok <- length(observed_countries) == 1L &&
+      identical(observed_countries, country)
+
+    if (!country_ok) {
+      return(list(
+        status = "failed_country",
+        reason = paste0(
+          "Workbook country values do not uniquely equal folder country ",
+          country,
+          ": ",
+          paste(observed_countries, collapse = "; ")
+        ),
+        n_rows = nrow(raw_data),
+        data = NULL,
+        type_audit = field_audit
+      ))
+    }
+
+    list(
+      status = "loaded",
+      reason = NA_character_,
+      n_rows = nrow(converted_data),
+      data = converted_data,
+      type_audit = field_audit
+    )
+  }, error = function(e) {
+    list(
+      status = "failed_read",
+      reason = conditionMessage(e),
+      n_rows = NA_integer_,
+      data = NULL,
+      type_audit = tibble(
+        dataset = character(), country = character(), relative_path = character(),
+        field = character(), target_type = character(),
+        observed_storage_types = character(), n_nonmissing = integer(),
+        n_incompatible = integer(), conversion_rule = character(),
+        type_status = character()
+      )
+    )
+  })
+}
+
+load_results <- pmap(
+  schema_valid_files %>%
+    select(
+      dataset, country, absolute_path, relative_path,
+      required_sheet, sheet
+    ),
+  load_validated_file
+)
+
+load_status <- schema_valid_files %>%
+  select(dataset, country, relative_path) %>%
+  mutate(
+    load_status = map_chr(load_results, "status"),
+    load_reason = map_chr(load_results, function(x) {
+      if (is.null(x$reason) || length(x$reason) == 0L) NA_character_ else x$reason
+    }),
+    loaded_rows = map_int(load_results, function(x) {
+      if (is.null(x$n_rows) || length(x$n_rows) == 0L) NA_integer_ else x$n_rows
+    })
+  )
+
+type_audit <- map_dfr(load_results, "type_audit")
+
+loaded_data_index <- which(load_status$load_status == "loaded")
+loaded_data <- load_results[loaded_data_index] %>% map("data")
+loaded_metadata <- schema_valid_files[loaded_data_index, ]
+
+census <- loaded_data[
+  loaded_metadata$dataset == "Census"
+] %>%
+  bind_rows()
+
+allocation <- loaded_data[
+  loaded_metadata$dataset == "Allocation"
+] %>%
+  bind_rows()
+
+if (nrow(census) == 0L || nrow(allocation) == 0L) {
+  stop("At least one pooled dataset has no successfully loaded country files.")
+}
+
+stopifnot(identical(names(census), census_columns))
+stopifnot(identical(names(allocation), allocation_columns))
+
+file_inventory <- schema_audit %>%
+  left_join(
+    load_status,
+    by = c("dataset", "country", "relative_path")
+  ) %>%
+  mutate(
+    candidate_status = "found",
+    final_status = case_when(
+      schema_status != "schema_ok" ~ schema_status,
+      !is.na(load_status) ~ load_status,
+      TRUE ~ "failed_unknown"
+    ),
+    final_reason = coalesce(schema_reason, load_reason),
+    loaded_rows = if_else(final_status == "loaded", loaded_rows, NA_integer_)
+  ) %>%
+  select(
+    dataset, country, relative_path, candidate_status, required_sheet = sheet,
+    source_rows, loaded_rows, final_status, final_reason
+  ) %>%
+  arrange(dataset, country)
+
+file_status_summary <- expand_grid(
+  dataset = c("Census", "Allocation"),
+  status = c("found", "loaded", "failed", "duplicated", "skipped")
+) %>%
+  left_join(
+    bind_rows(
+      file_inventory %>%
+        count(dataset, status = candidate_status, name = "n_files"),
+      file_inventory %>%
+        transmute(
+          dataset,
+          status = case_when(
+            final_status == "loaded" ~ "loaded",
+            str_starts(final_status, "failed") ~ "failed",
+            TRUE ~ final_status
+          )
+        ) %>%
+        count(dataset, status, name = "n_files")
+    ) %>%
+      group_by(dataset, status) %>%
+      summarise(n_files = sum(n_files), .groups = "drop"),
+    by = c("dataset", "status")
+  ) %>%
+  mutate(n_files = replace_na(n_files, 0L))
+
+stack_reconciliation <- bind_rows(
+  tibble(
+    dataset = "Census",
+    loaded_source_rows = sum(file_inventory$loaded_rows[
+      file_inventory$dataset == "Census"
+    ], na.rm = TRUE),
+    stacked_rows = nrow(census),
+    rows_reconcile = loaded_source_rows == stacked_rows
+  ),
+  tibble(
+    dataset = "Allocation",
+    loaded_source_rows = sum(file_inventory$loaded_rows[
+      file_inventory$dataset == "Allocation"
+    ], na.rm = TRUE),
+    stacked_rows = nrow(allocation),
+    rows_reconcile = loaded_source_rows == stacked_rows
+  )
+)
+
+stopifnot(all(stack_reconciliation$rows_reconcile))
+```
+
+## File and type status
+
+```{r print-file-status}
+display_table(file_status_summary)
+```
+
+```{r print-file-inventory}
+display_table(file_inventory)
+```
+
+```{r print-type-audit}
+display_table(type_audit)
+```
+
+```{r print-stack-reconciliation}
+display_table(stack_reconciliation)
+```
+
+# 3. Flatten and resolve `census_ref`
+
+Each non-missing `census_ref` is expected to be a JSON array. Tokens are trimmed only in a derived lookup field; the raw allocation variable remains unchanged. Same-country Census `evidence_id` is tried first, followed explicitly by same-country Census `instrument_id`. Matching both namespaces to the same unique Census record is reported as namespace overlap, not ambiguity.
+
+```{r parse-census-ref}
+parse_reference_cell <- function(country, allocation_evidence_id, pair_id,
+                                 census_ref_raw, allocation_row) {
+  base_row <- tibble(
+    country = country,
+    allocation_row = allocation_row,
+    allocation_evidence_id = allocation_evidence_id,
+    pair_id = pair_id,
+    census_ref_raw = census_ref_raw
+  )
+
+  if (is.na(census_ref_raw) || str_trim(census_ref_raw) == "") {
+    return(base_row %>%
+      mutate(
+        element_position = NA_integer_,
+        ref_token = NA_character_,
+        ref_token_trimmed = NA_character_,
+        parse_status = "missing_raw",
+        parse_detail = "census_ref is missing or blank"
+      ))
+  }
+
+  parsed <- tryCatch(
+    jsonlite::fromJSON(census_ref_raw, simplifyVector = FALSE),
+    error = identity
+  )
+
+  if (inherits(parsed, "error")) {
+    return(base_row %>%
+      mutate(
+        element_position = NA_integer_,
+        ref_token = NA_character_,
+        ref_token_trimmed = NA_character_,
+        parse_status = "malformed_json",
+        parse_detail = conditionMessage(parsed)
+      ))
+  }
+
+  if (!is.list(parsed)) {
+    return(base_row %>%
+      mutate(
+        element_position = NA_integer_,
+        ref_token = cell_to_text(parsed),
+        ref_token_trimmed = str_trim(cell_to_text(parsed)),
+        parse_status = "malformed_non_array",
+        parse_detail = "JSON value is not an array"
+      ))
+  }
+
+  if (length(parsed) == 0L) {
+    return(base_row %>%
+      mutate(
+        element_position = NA_integer_,
+        ref_token = NA_character_,
+        ref_token_trimmed = NA_character_,
+        parse_status = "malformed_empty_array",
+        parse_detail = "JSON array contains no reference values"
+      ))
+  }
+
+  map_dfr(seq_along(parsed), function(position) {
+    element <- parsed[[position]]
+    element_is_scalar <- !is.list(element) && length(element) == 1L
+    token <- if (element_is_scalar) cell_to_text(element) else NA_character_
+    token_trimmed <- if (!is.na(token)) str_trim(token) else NA_character_
+
+    base_row %>%
+      mutate(
+        element_position = as.integer(position),
+        ref_token = token,
+        ref_token_trimmed = token_trimmed,
+        parse_status = case_when(
+          !element_is_scalar ~ "malformed_non_scalar",
+          is.na(token_trimmed) || token_trimmed == "" ~ "malformed_empty_token",
+          TRUE ~ "parsed"
+        ),
+        parse_detail = case_when(
+          !element_is_scalar ~ "Array element is not a scalar",
+          is.na(token_trimmed) || token_trimmed == "" ~
+            "Array element is missing or blank",
+          TRUE ~ NA_character_
+        )
+      )
+  })
+}
+
+reference_tokens <- pmap_dfr(
+  allocation %>%
+    mutate(allocation_row = row_number()) %>%
+    select(
+      country, allocation_evidence_id = evidence_id, pair_id,
+      census_ref_raw = census_ref, allocation_row
+    ),
+  parse_reference_cell
+)
+
+census_evidence_map <- census %>%
+  mutate(
+    evidence_lookup = str_trim(evidence_id),
+    target_instrument = if_else(
+      is_missing_value(instrument_id),
+      NA_character_,
+      str_trim(instrument_id)
+    )
+  ) %>%
+  filter(!is_missing_value(evidence_lookup)) %>%
+  group_by(country, evidence_lookup) %>%
+  summarise(
+    evidence_match_rows = n(),
+    evidence_target_count = n_distinct(target_instrument, na.rm = TRUE),
+    evidence_target = {
+      targets <- unique(na.omit(target_instrument))
+      if (length(targets) == 1L) targets[[1]] else NA_character_
+    },
+    .groups = "drop"
+  )
+
+census_instrument_map <- census %>%
+  mutate(instrument_lookup = str_trim(instrument_id)) %>%
+  filter(!is_missing_value(instrument_lookup)) %>%
+  group_by(country, instrument_lookup) %>%
+  summarise(
+    instrument_match_rows = n(),
+    instrument_target_count = n_distinct(instrument_lookup),
+    instrument_target = {
+      targets <- unique(na.omit(instrument_lookup))
+      if (length(targets) == 1L) targets[[1]] else NA_character_
+    },
+    .groups = "drop"
+  )
+
+global_key_locations <- bind_rows(
+  census %>%
+    transmute(country, ref_token_trimmed = str_trim(evidence_id)),
+  census %>%
+    transmute(country, ref_token_trimmed = str_trim(instrument_id))
+) %>%
+  filter(!is_missing_value(ref_token_trimmed)) %>%
+  distinct(country, ref_token_trimmed) %>%
+  group_by(ref_token_trimmed) %>%
+  summarise(
+    matching_countries = paste(sort(unique(country)), collapse = "; "),
+    .groups = "drop"
+  )
+
+reference_resolution <- reference_tokens %>%
+  left_join(
+    census_evidence_map,
+    by = c("country", "ref_token_trimmed" = "evidence_lookup")
+  ) %>%
+  left_join(
+    census_instrument_map,
+    by = c("country", "ref_token_trimmed" = "instrument_lookup")
+  ) %>%
+  left_join(global_key_locations, by = "ref_token_trimmed") %>%
+  mutate(
+    evidence_match_rows = replace_na(evidence_match_rows, 0L),
+    evidence_target_count = replace_na(evidence_target_count, 0L),
+    instrument_match_rows = replace_na(instrument_match_rows, 0L),
+    instrument_target_count = replace_na(instrument_target_count, 0L),
+    namespace_overlap = evidence_match_rows > 0L & instrument_match_rows > 0L,
+    namespace_same_target = namespace_overlap &
+      evidence_target_count == 1L & instrument_target_count == 1L &
+      coalesce(evidence_target == instrument_target, FALSE),
+    token_country_prefix = str_match(
+      ref_token_trimmed,
+      "^([A-Z]{3})_"
+    )[, 2],
+    expected_identifier_form = str_detect(
+      ref_token_trimmed,
+      "^(?:[A-Z]{3}_.+_CEN_[0-9]+|[A-Z]{3}_INS_[0-9]+)$"
+    ),
+    other_country_match = !is.na(matching_countries) &
+      !str_detect(
+        paste0(";", matching_countries, ";"),
+        fixed(paste0(";", country, ";"))
+      ),
+    resolution_status = case_when(
+      parse_status != "parsed" ~ parse_status,
+      evidence_match_rows > 1L ~ "ambiguous_evidence_id",
+      evidence_match_rows == 1L & evidence_target_count == 0L ~
+        "missing_target_instrument_id",
+      evidence_match_rows == 1L & evidence_target_count > 1L ~
+        "ambiguous_evidence_id",
+      evidence_match_rows == 1L & namespace_overlap &
+        !namespace_same_target ~ "id_namespace_collision",
+      evidence_match_rows == 1L & evidence_target_count == 1L ~
+        "resolved_evidence_id",
+      evidence_match_rows == 0L & instrument_match_rows > 1L ~
+        "ambiguous_instrument_id",
+      evidence_match_rows == 0L & instrument_match_rows == 1L &
+        instrument_target_count == 1L ~ "resolved_instrument_id",
+      evidence_match_rows == 0L & instrument_match_rows == 1L &
+        instrument_target_count != 1L ~ "ambiguous_instrument_id",
+      !is.na(token_country_prefix) & token_country_prefix != country ~
+        "cross_country_prefix",
+      other_country_match ~ "cross_country_match",
+      expected_identifier_form ~ "unmatched",
+      TRUE ~ "malformed_identifier"
+    ),
+    resolved_instrument_id = case_when(
+      resolution_status == "resolved_evidence_id" ~ evidence_target,
+      resolution_status == "resolved_instrument_id" ~ instrument_target,
+      TRUE ~ NA_character_
+    ),
+    successfully_resolved = resolution_status %in% c(
+      "resolved_evidence_id", "resolved_instrument_id"
+    ),
+    resolution_detail = case_when(
+      resolution_status == "resolved_evidence_id" & namespace_same_target ~
+        "Evidence and instrument namespaces overlap on the same unique Census record; evidence-ID precedence used",
+      resolution_status == "resolved_evidence_id" ~
+        "Resolved by same-country Census evidence_id",
+      resolution_status == "resolved_instrument_id" ~
+        "Resolved by explicit same-country Census instrument_id fallback",
+      resolution_status == "unmatched" ~
+        "Well-formed identifier did not match a loaded Census record in any country",
+      resolution_status == "malformed_identifier" ~
+        "Parsed scalar does not follow the documented Census evidence/instrument ID form",
+      str_starts(resolution_status, "cross_country") ~
+        "Reference was not used because it points outside the allocation country",
+      parse_status != "parsed" ~ parse_detail,
+      TRUE ~ resolution_status
+    )
+  )
+
+reference_denominator <- reference_resolution %>%
+  count(country, name = "n_reference_values")
+
+reference_resolution_summary <- reference_resolution %>%
+  group_by(country) %>%
+  summarise(
+    n_reference_values = n(),
+    n_resolved = sum(successfully_resolved),
+    pct_resolved = n_resolved / n_reference_values,
+    n_resolved_evidence_id = sum(resolution_status == "resolved_evidence_id"),
+    n_resolved_instrument_id = sum(resolution_status == "resolved_instrument_id"),
+    n_namespace_overlap_same_record = sum(
+      successfully_resolved & namespace_same_target
+    ),
+    n_unmatched = sum(resolution_status == "unmatched"),
+    n_malformed = sum(str_starts(resolution_status, "malformed")),
+    n_cross_country = sum(str_starts(resolution_status, "cross_country")),
+    n_ambiguous = sum(
+      str_starts(resolution_status, "ambiguous") |
+        resolution_status == "id_namespace_collision"
+    ),
+    .groups = "drop"
+  ) %>%
+  bind_rows(
+    reference_resolution %>%
+      summarise(
+        country = "Overall",
+        n_reference_values = n(),
+        n_resolved = sum(successfully_resolved),
+        pct_resolved = n_resolved / n_reference_values,
+        n_resolved_evidence_id = sum(
+          resolution_status == "resolved_evidence_id"
+        ),
+        n_resolved_instrument_id = sum(
+          resolution_status == "resolved_instrument_id"
+        ),
+        n_namespace_overlap_same_record = sum(
+          successfully_resolved & namespace_same_target
+        ),
+        n_unmatched = sum(resolution_status == "unmatched"),
+        n_malformed = sum(str_starts(resolution_status, "malformed")),
+        n_cross_country = sum(str_starts(resolution_status, "cross_country")),
+        n_ambiguous = sum(
+          str_starts(resolution_status, "ambiguous") |
+            resolution_status == "id_namespace_collision"
+        )
+      )
+  )
+
+reference_resolution_issues <- reference_resolution %>%
+  filter(!successfully_resolved) %>%
+  select(
+    country, allocation_row, allocation_evidence_id, pair_id,
+    element_position, census_ref_raw, ref_token, ref_token_trimmed,
+    resolution_status, resolution_detail, matching_countries
+  ) %>%
+  arrange(country, allocation_row, element_position)
+
+resolved_links <- reference_resolution %>%
+  filter(successfully_resolved, !is.na(resolved_instrument_id)) %>%
+  distinct(country, instrument_id = resolved_instrument_id)
+
+census <- census %>%
+  left_join(
+    resolved_links %>% mutate(is_earmarked = 1L),
+    by = c("country", "instrument_id")
+  ) %>%
+  mutate(is_earmarked = replace_na(is_earmarked, 0L)) %>%
+  select(all_of(census_columns), is_earmarked)
+```
+
+## Census-reference resolution
+
+```{r print-ref-summary}
+display_table(reference_resolution_summary)
+```
+
+```{r print-ref-issues}
+display_table(reference_resolution_issues)
+```
+
+# 4. Sanity checks
+
+```{r prepare-sanity-checks}
+country_overlap <- full_join(
+  census %>% distinct(country) %>% mutate(in_census = TRUE),
+  allocation %>% distinct(country) %>% mutate(in_allocation = TRUE),
+  by = "country"
+) %>%
+  mutate(
+    in_census = replace_na(in_census, FALSE),
+    in_allocation = replace_na(in_allocation, FALSE),
+    dataset_presence = case_when(
+      in_census & in_allocation ~ "both",
+      in_census ~ "census_only",
+      in_allocation ~ "allocation_only"
+    )
+  ) %>%
+  arrange(country)
+
+country_key_counts <- bind_rows(
+  census %>%
+    group_by(country) %>%
+    summarise(
+      dataset = "Census",
+      n_rows = n(),
+      n_distinct_evidence_id = n_distinct(
+        evidence_id[!is_missing_value(evidence_id)]
+      ),
+      n_distinct_instrument_id = n_distinct(
+        instrument_id[!is_missing_value(instrument_id)]
+      ),
+      n_distinct_pair_id = NA_integer_,
+      n_distinct_document_id = n_distinct(
+        document_id[!is_missing_value(document_id)]
+      ),
+      .groups = "drop"
+    ),
+  allocation %>%
+    group_by(country) %>%
+    summarise(
+      dataset = "Allocation",
+      n_rows = n(),
+      n_distinct_evidence_id = n_distinct(
+        evidence_id[!is_missing_value(evidence_id)]
+      ),
+      n_distinct_instrument_id = n_distinct(
+        instrument_id[!is_missing_value(instrument_id)]
+      ),
+      n_distinct_pair_id = n_distinct(pair_id[!is_missing_value(pair_id)]),
+      n_distinct_document_id = n_distinct(
+        document_id[!is_missing_value(document_id)]
+      ),
+      .groups = "drop"
+    )
+) %>%
+  select(dataset, country, everything()) %>%
+  arrange(dataset, country)
+
+missing_by_column <- bind_rows(
+  map_dfr(names(census), function(field) {
+    missing <- is_missing_value(census[[field]])
+    tibble(
+      dataset = "Census",
+      field = field,
+      n_rows = nrow(census),
+      n_missing = sum(missing),
+      pct_missing = sum(missing) / nrow(census)
+    )
+  }),
+  map_dfr(names(allocation), function(field) {
+    missing <- is_missing_value(allocation[[field]])
+    tibble(
+      dataset = "Allocation",
+      field = field,
+      n_rows = nrow(allocation),
+      n_missing = sum(missing),
+      pct_missing = sum(missing) / nrow(allocation)
+    )
+  })
+)
+
+missing_ids <- full_join(
+  census %>%
+    group_by(country) %>%
+    summarise(
+      missing_census_evidence_id_rows = sum(is_missing_value(evidence_id)),
+      missing_census_instrument_id_rows = sum(is_missing_value(instrument_id)),
+      .groups = "drop"
+    ),
+  allocation %>%
+    group_by(country) %>%
+    summarise(
+      missing_allocation_evidence_id_rows = sum(is_missing_value(evidence_id)),
+      missing_allocation_instrument_id_rows = sum(is_missing_value(instrument_id)),
+      missing_allocation_pair_id_rows = sum(is_missing_value(pair_id)),
+      missing_census_ref_rows = sum(is_missing_value(census_ref)),
+      .groups = "drop"
+    ),
+  by = "country"
+) %>%
+  mutate(across(-country, ~ replace_na(.x, 0L))) %>%
+  arrange(country)
+
+duplicate_evidence_id <- bind_rows(
+  census %>%
+    filter(!is_missing_value(evidence_id)) %>%
+    count(country, evidence_id, name = "n_rows") %>%
+    filter(n_rows > 1L) %>%
+    mutate(dataset = "Census", .before = 1),
+  allocation %>%
+    filter(!is_missing_value(evidence_id)) %>%
+    count(country, evidence_id, name = "n_rows") %>%
+    filter(n_rows > 1L) %>%
+    mutate(dataset = "Allocation", .before = 1)
+)
+
+duplicate_census_instrument <- census %>%
+  filter(!is_missing_value(instrument_id)) %>%
+  count(country, instrument_id, name = "n_rows") %>%
+  filter(n_rows > 1L) %>%
+  arrange(country, instrument_id)
+
+duplicate_allocation_pair <- allocation %>%
+  filter(!is_missing_value(pair_id)) %>%
+  group_by(country, pair_id) %>%
+  summarise(
+    n_rows = n(),
+    n_evidence_ids = n_distinct(evidence_id[!is_missing_value(evidence_id)]),
+    evidence_ids = paste(sort(unique(evidence_id)), collapse = "; "),
+    .groups = "drop"
+  ) %>%
+  filter(n_rows > 1L) %>%
+  arrange(country, pair_id)
+
+make_row_signature <- function(data) {
+  vapply(seq_len(nrow(data)), function(i) {
+    paste(
+      vapply(data, function(column) {
+        value <- column[[i]]
+        if (is.na(value)) "<NA>" else as.character(value)
+      }, character(1)),
+      collapse = "\u241E"
+    )
+  }, character(1))
+}
+
+find_full_row_duplicates <- function(data, dataset) {
+  signatures <- make_row_signature(data)
+  signature_counts <- table(signatures)
+  duplicated_signatures <- names(signature_counts[signature_counts > 1L])
+
+  if (length(duplicated_signatures) == 0L) {
+    return(tibble(
+      dataset = character(), country = character(), source_row = integer(),
+      evidence_id = character(), analytical_key = character(),
+      n_identical_rows = integer()
+    ))
+  }
+
+  tibble(
+    dataset = dataset,
+    country = data$country,
+    source_row = seq_len(nrow(data)),
+    evidence_id = data$evidence_id,
+    analytical_key = if (dataset == "Census") data$instrument_id else data$pair_id,
+    signature = signatures
+  ) %>%
+    filter(signature %in% duplicated_signatures) %>%
+    mutate(n_identical_rows = as.integer(signature_counts[signature])) %>%
+    select(-signature)
+}
+
+duplicate_full_rows <- bind_rows(
+  find_full_row_duplicates(census, "Census"),
+  find_full_row_duplicates(allocation, "Allocation")
+)
+
+duplicated_pair_rows <- allocation %>%
+  filter(!is_missing_value(pair_id)) %>%
+  add_count(country, pair_id, name = "pair_row_count") %>%
+  filter(pair_row_count > 1L) %>%
+  select(-pair_row_count)
+
+if (nrow(duplicated_pair_rows) == 0L) {
+  pair_conflicts <- tibble(
+    country = character(), pair_id = character(), field = character(),
+    n_distinct_values = integer(), values = character(), n_rows = integer()
+  )
+} else {
+  pair_conflicts <- duplicated_pair_rows %>%
+    mutate(across(everything(), as.character)) %>%
+    pivot_longer(
+      cols = -c(country, pair_id, evidence_id),
+      names_to = "field",
+      values_to = "value"
+    ) %>%
+    mutate(value = if_else(is_missing_value(value), "Missing", value)) %>%
+    group_by(country, pair_id, field) %>%
+    summarise(
+      n_distinct_values = n_distinct(value),
+      values = paste(sort(unique(value)), collapse = " || "),
+      n_rows = n(),
+      .groups = "drop"
+    ) %>%
+    filter(n_distinct_values > 1L) %>%
+    arrange(country, pair_id, field)
+}
+```
+
+## Countries present
+
+```{r print-country-overlap}
+display_table(country_overlap)
+```
+
+## Rows and distinct keys by country
+
+```{r print-country-key-counts}
+display_table(country_key_counts)
+```
+
+## Missing values by column
+
+```{r print-missing-by-column}
+display_table(missing_by_column)
+```
+
+## Missing identifiers
+
+```{r print-missing-ids}
+display_table(missing_ids)
+```
+
+## Duplicate evidence IDs
+
+```{r print-duplicate-evidence}
+display_table(duplicate_evidence_id)
+```
+
+## Duplicate Census instrument IDs
+
+```{r print-duplicate-census-instrument}
+display_table(duplicate_census_instrument)
+```
+
+## Duplicate allocation pair IDs
+
+```{r print-duplicate-allocation-pair}
+display_table(duplicate_allocation_pair)
+```
+
+## Exact duplicate rows
+
+```{r print-duplicate-full-rows}
+display_table(duplicate_full_rows)
+```
+
+## Conflicting fields within `country + pair_id`
+
+```{r print-pair-conflicts}
+display_table(pair_conflicts)
+```
+
+## Category and document-year audits
+
+```{r prepare-category-audit}
+census_category_spec <- list(
+  row_type = c("source"),
+  official_name_underspecified = c("0", "1"),
+  in_force = c("0", "1"),
+  tax_instrument = c(
+    "VAT", "excise", "fuel_levy", "telecom_levy", "environmental_tax",
+    "payroll_tax", "resource_revenue", "redevance",
+    "parafiscal_contribution", "fine", "other"
+  ),
+  base_sector = c(
+    "A_agriculture_forestry_fishing", "B_mining_quarrying",
+    "C_manufacturing", "D_electricity_gas", "E_water_waste",
+    "F_construction", "G_trade", "H_transport_storage",
+    "I_accommodation_food", "J_information_communication",
+    "K_financial_insurance", "L_real_estate",
+    "M_professional_technical", "N_admin_support",
+    "O_public_administration", "P_education", "Q_health_social",
+    "R_arts_entertainment", "S_other_services",
+    "T_households_employers", "U_extraterritorial",
+    "general_economy_wide", "not_applicable"
+  ),
+  base_division = "REGEX_01_TO_99",
+  is_penalty = c("0", "1"),
+  rate_is_schedule = c("0", "1"),
+  rate_type = c(
+    "ad_valorem_pct", "per_unit_amount", "fixed_amount",
+    "amount_per_unit_of_base", "rate_point_increment"
+  ),
+  rate_basis = c(
+    "stated", "banded", "deferred_subordinate_act", "cross_reference",
+    "ceiling_delegated", "floor_delegated",
+    "increment_on_other_instrument", "not_applicable"
+  ),
+  change_type = c(
+    "new", "amendment_rate", "amendment_base", "amendment_key",
+    "merger", "split", "replacement", "repeal", "none"
+  ),
+  evidence_status = c("attested", "referenced_not_enacted_here")
+)
+
+allocation_category_spec <- list(
+  row_type = c("allocation"),
+  beneficiary_type = c(
+    "fund", "agency", "ministry", "collectivite_territoriale", "sector",
+    "public_employees", "program", "supranational", "general_budget"
+  ),
+  allocation_nature = c("proceeds_share", "cost_recovery_component"),
+  share_is_schedule = c("0", "1"),
+  share_type = c("pct", "per_unit_amount", "fixed_amount"),
+  share_basis = c("stated", "whole_proceeds_implied", "deferred_arrete"),
+  is_purpose_restricted = c("0", "1"),
+  assignment_type = c(
+    "earmark_functional", "hybrid_devolved_earmark",
+    "equalization_transfer", "community_levy_external",
+    "tax_sharing_specific", "tax_sharing_general", "derivation_transfer"
+  ),
+  destination_function_basis = c("stated", "named_body", "inferred"),
+  destination_function_multi = c("0", "1")
+)
+
+audit_category_field <- function(data, dataset, field, expected) {
+  values <- data[[field]]
+  displayed <- if_else(is_missing_value(values), "Missing", as.character(values))
+
+  tibble(value = displayed) %>%
+    count(value, name = "n_rows") %>%
+    mutate(
+      dataset = dataset,
+      field = field,
+      expected_status = case_when(
+        value == "Missing" ~ "missing",
+        identical(expected, "REGEX_01_TO_99") &
+          str_detect(value, "^(?:0[1-9]|[1-9][0-9])$") ~ "expected",
+        identical(expected, "REGEX_01_TO_99") ~ "unexpected",
+        value %in% expected ~ "expected",
+        TRUE ~ "unexpected"
+      ),
+      .before = 1
+    )
+}
+
+category_audit <- bind_rows(
+  imap_dfr(census_category_spec, ~ audit_category_field(
+    census, "Census", .y, .x
+  )),
+  imap_dfr(allocation_category_spec, ~ audit_category_field(
+    allocation, "Allocation", .y, .x
+  ))
+) %>%
+  arrange(dataset, field, expected_status, value)
+
+sort_year_values <- function(values) {
+  values <- values[!is_missing_value(values)] %>% unique()
+  if (length(values) == 0L) {
+    return(NA_character_)
+  }
+  numeric_year <- suppressWarnings(as.integer(values))
+  order_index <- order(is.na(numeric_year), numeric_year, values)
+  paste(values[order_index], collapse = "; ")
+}
+
+document_years <- bind_rows(
+  census %>% mutate(dataset = "Census", .before = 1),
+  allocation %>% mutate(dataset = "Allocation", .before = 1)
+) %>%
+  group_by(dataset, country) %>%
+  summarise(
+    n_rows = n(),
+    document_years = sort_year_values(document_year),
+    min_document_year = {
+      years <- suppressWarnings(as.integer(document_year))
+      if (all(is.na(years))) NA_integer_ else min(years, na.rm = TRUE)
+    },
+    max_document_year = {
+      years <- suppressWarnings(as.integer(document_year))
+      if (all(is.na(years))) NA_integer_ else max(years, na.rm = TRUE)
+    },
+    n_missing_document_year = sum(is_missing_value(document_year)),
+    n_unparseable_document_year = sum(
+      !is_missing_value(document_year) &
+        !str_detect(document_year, "^[0-9]{4}$")
+    ),
+    unparseable_values = {
+      bad <- unique(document_year[
+        !is_missing_value(document_year) &
+          !str_detect(document_year, "^[0-9]{4}$")
+      ])
+      if (length(bad) == 0L) NA_character_ else paste(sort(bad), collapse = "; ")
+    },
+    .groups = "drop"
+  ) %>%
+  arrange(dataset, country)
+```
+
+```{r print-category-audit}
+display_table(category_audit)
+```
+
+```{r print-document-years}
+display_table(document_years)
+```
+
+# 5. Country and legal-corpus coverage
+
+```{r prepare-corpus-coverage}
+make_corpus_coverage <- function(data) {
+  data %>%
+    group_by(country) %>%
+    summarise(
+      n_documents = n_distinct(document_id[!is_missing_value(document_id)]),
+      document_years = sort_year_values(document_year),
+      corpus_type = case_when(
+        n_documents == 1L ~ "single_document",
+        n_documents > 1L ~ "multi_document",
+        TRUE ~ NA_character_
+      ),
+      .groups = "drop"
+    ) %>%
+    arrange(country)
+}
+
+census_coverage <- make_corpus_coverage(census)
+allocation_coverage <- make_corpus_coverage(allocation)
+```
+
+## Census corpus
+
+```{r print-census-coverage}
+display_table(census_coverage)
+```
+
+## Allocation corpus
+
+```{r print-allocation-coverage}
+display_table(allocation_coverage)
+```
+
+# 6. Database at a glance
+
+```{r prepare-database-glance}
+country_universe <- sort(unique(c(census$country, allocation$country)))
+
+database_glance <- tibble(country = country_universe) %>%
+  left_join(
+    census %>%
+      filter(!is_missing_value(instrument_id)) %>%
+      distinct(country, instrument_id) %>%
+      count(country, name = "D"),
+    by = "country"
+  ) %>%
+  left_join(
+    resolved_links %>% count(country, name = "E"),
+    by = "country"
+  ) %>%
+  left_join(
+    allocation %>%
+      filter(!is_missing_value(pair_id)) %>%
+      distinct(country, pair_id) %>%
+      count(country, name = "P"),
+    by = "country"
+  ) %>%
+  mutate(
+    across(c(D, E, P), ~ replace_na(.x, 0L)),
+    earmark_incidence = if_else(D > 0L, E / D, NA_real_),
+    allocation_density = if_else(E > 0L, P / E, NA_real_)
+  )
+```
+
+```{r print-database-glance}
+display_table(database_glance)
+```
+
+# 7. Global composition of the allocation layer
+
+The unit is a distinct `country + pair_id`. No strict-earmark, in-force, penalty, or other analytical filter is imposed. Missing category values are represented as `Missing`.
+
+For each non-destination category, duplicate allocation rows must agree on the category. The notebook stops rather than selecting a value if one pair has conflicting values in that field.
+
+```{r prepare-composition}
+allocation_country_totals <- allocation %>%
+  filter(!is_missing_value(pair_id)) %>%
+  distinct(country, pair_id) %>%
+  count(country, name = "country_total_allocations")
+
+allocation_countries <- allocation %>%
+  distinct(country) %>%
+  arrange(country)
+
+make_composition <- function(field) {
+  pair_categories <- allocation %>%
+    filter(!is_missing_value(pair_id)) %>%
+    transmute(
+      country,
+      pair_id,
+      category = if_else(
+        is_missing_value(.data[[field]]),
+        "Missing",
+        as.character(.data[[field]])
+      )
+    ) %>%
+    distinct()
+
+  category_conflicts <- pair_categories %>%
+    count(country, pair_id, name = "n_categories") %>%
+    filter(n_categories > 1L)
+
+  if (nrow(category_conflicts) > 0L) {
+    print(category_conflicts)
+    stop(
+      "Conflicting values within country + pair_id for composition field: ",
+      field
+    )
+  }
+
+  country_category_counts <- pair_categories %>%
+    count(country, category, name = "n_allocations")
+
+  complete_counts <- expand_grid(
+    country = allocation_countries$country,
+    category = sort(unique(pair_categories$category))
+  ) %>%
+    left_join(country_category_counts, by = c("country", "category")) %>%
+    mutate(n_allocations = replace_na(n_allocations, 0L)) %>%
+    left_join(allocation_country_totals, by = "country") %>%
+    mutate(
+      within_country_share = if_else(
+        country_total_allocations > 0L,
+        n_allocations / country_total_allocations,
+        NA_real_
+      )
+    )
+
+  complete_counts %>%
+    group_by(category) %>%
+    summarise(
+      pooled_distinct_allocations = sum(n_allocations),
+      countries_with_category = sum(n_allocations > 0L),
+      median_allocations_among_users = if_else(
+        any(n_allocations > 0L),
+        median(n_allocations[n_allocations > 0L]),
+        NA_real_
+      ),
+      mean_within_country_share = if_else(
+        any(is.na(within_country_share)),
+        NA_real_,
+        mean(within_country_share)
+      ),
+      .groups = "drop"
+    ) %>%
+    arrange(desc(pooled_distinct_allocations), category)
+}
+
+composition_assignment <- make_composition("assignment_type")
+composition_nature <- make_composition("allocation_nature")
+composition_purpose <- make_composition("is_purpose_restricted")
+composition_beneficiary <- make_composition("beneficiary_type")
+```
+
+## Assignment type
+
+```{r print-composition-assignment}
+display_table(composition_assignment)
+```
+
+## Allocation nature
+
+```{r print-composition-nature}
+display_table(composition_nature)
+```
+
+## Purpose restriction
+
+```{r print-composition-purpose}
+display_table(composition_purpose)
+```
+
+## Beneficiary type
+
+```{r print-composition-beneficiary}
+display_table(composition_beneficiary)
+```
+
+## Destination functions
+
+The long destination-function table combines the primary function and every semicolon-delimited additional function, trims lookup values, removes empty values, and counts each `country + pair_id + destination_function` combination once. One allocation may finance several functions; therefore destination-function counts can exceed the total number of allocations and their mean within-country shares can sum to more than 100 percent.
+
+```{r prepare-destination-functions}
+cofog_path <- file.path(project_root, "data", "COFOG_GFSM2014_mapping.csv")
+
+cofog_mapping <- read_delim(
+  cofog_path,
+  delim = ";",
+  col_types = cols(.default = col_character()),
+  trim_ws = FALSE,
+  show_col_types = FALSE
+) %>%
+  select(
+    destination_function = cofog_code,
+    mapping_level = level,
+    destination_function_name = cofog_name
+  )
+
+stopifnot(
+  all(c("destination_function", "destination_function_name") %in%
+        names(cofog_mapping)),
+  nrow(cofog_mapping) == n_distinct(cofog_mapping$destination_function)
+)
+
+special_function_labels <- tribble(
+  ~destination_function, ~destination_function_name, ~mapping_level,
+  "general_budget", "General budget", "non_GFSM",
+  "local_budget", "Local budget", "non_GFSM",
+  "unallocated", "Unallocated", "non_GFSM",
+  "Missing", "Missing", "missing"
+)
+
+primary_functions <- allocation %>%
+  filter(!is_missing_value(pair_id)) %>%
+  transmute(
+    country,
+    pair_id,
+    destination_function = if_else(
+      is_missing_value(destination_function),
+      NA_character_,
+      str_trim(as.character(destination_function))
+    ),
+    source = "primary"
+  ) %>%
+  filter(!is.na(destination_function), destination_function != "")
+
+detail_functions <- allocation %>%
+  filter(!is_missing_value(pair_id)) %>%
+  transmute(
+    country,
+    pair_id,
+    destination_function_detail = if_else(
+      is_missing_value(destination_function_detail),
+      NA_character_,
+      as.character(destination_function_detail)
+    )
+  ) %>%
+  separate_longer_delim(destination_function_detail, delim = ";") %>%
+  transmute(
+    country,
+    pair_id,
+    destination_function = str_trim(destination_function_detail),
+    source = "detail"
+  ) %>%
+  filter(!is.na(destination_function), destination_function != "")
+
+function_links_present <- bind_rows(primary_functions, detail_functions) %>%
+  group_by(country, pair_id, destination_function) %>%
+  summarise(
+    source = paste(sort(unique(source)), collapse = "; "),
+    .groups = "drop"
+  )
+
+pairs_without_function <- allocation %>%
+  filter(!is_missing_value(pair_id)) %>%
+  distinct(country, pair_id) %>%
+  anti_join(
+    function_links_present %>% distinct(country, pair_id),
+    by = c("country", "pair_id")
+  ) %>%
+  mutate(
+    destination_function = "Missing",
+    source = "missing"
+  )
+
+destination_function_long <- bind_rows(
+  function_links_present,
+  pairs_without_function
+) %>%
+  left_join(cofog_mapping, by = "destination_function") %>%
+  left_join(
+    special_function_labels,
+    by = "destination_function",
+    suffix = c("", "_special")
+  ) %>%
+  mutate(
+    destination_function_name = coalesce(
+      destination_function_name,
+      destination_function_name_special
+    ),
+    mapping_level = coalesce(mapping_level, mapping_level_special),
+    destination_function_label = case_when(
+      destination_function == "Missing" ~ "Missing",
+      is.na(destination_function_name) ~ destination_function,
+      TRUE ~ paste0(
+        destination_function,
+        " - ",
+        destination_function_name
+      )
+    )
+  ) %>%
+  select(
+    country, pair_id, destination_function, destination_function_name,
+    destination_function_label, mapping_level, source
+  ) %>%
+  arrange(country, pair_id, destination_function)
+
+function_map_audit <- destination_function_long %>%
+  count(
+    destination_function, destination_function_name, mapping_level,
+    name = "n_distinct_pair_function_links"
+  ) %>%
+  mutate(
+    mapping_status = case_when(
+      destination_function == "Missing" ~ "missing",
+      mapping_level == "non_GFSM" ~ "preserved_non_GFSM",
+      mapping_level == "group" ~ "mapped_GFSM_group",
+      !is.na(mapping_level) ~ "mapped_non_group_code",
+      TRUE ~ "unmapped"
+    )
+  ) %>%
+  arrange(mapping_status, destination_function)
+
+function_country_counts <- destination_function_long %>%
+  count(
+    country, destination_function, destination_function_name,
+    destination_function_label,
+    name = "n_allocations"
+  )
+
+function_categories <- destination_function_long %>%
+  distinct(
+    destination_function, destination_function_name,
+    destination_function_label
+  )
+
+function_complete_counts <- crossing(
+  allocation_countries,
+  function_categories
+) %>%
+  left_join(
+    function_country_counts,
+    by = c(
+      "country", "destination_function", "destination_function_name",
+      "destination_function_label"
+    )
+  ) %>%
+  mutate(n_allocations = replace_na(n_allocations, 0L)) %>%
+  left_join(allocation_country_totals, by = "country") %>%
+  mutate(
+    within_country_share = if_else(
+      country_total_allocations > 0L,
+      n_allocations / country_total_allocations,
+      NA_real_
+    )
+  )
+
+composition_destination <- function_complete_counts %>%
+  group_by(
+    destination_function, destination_function_name,
+    destination_function_label
+  ) %>%
+  summarise(
+    pooled_distinct_allocations = sum(n_allocations),
+    countries_with_category = sum(n_allocations > 0L),
+    median_allocations_among_users = if_else(
+      any(n_allocations > 0L),
+      median(n_allocations[n_allocations > 0L]),
+      NA_real_
+    ),
+    mean_within_country_share = if_else(
+      any(is.na(within_country_share)),
+      NA_real_,
+      mean(within_country_share)
+    ),
+    .groups = "drop"
+  ) %>%
+  arrange(desc(pooled_distinct_allocations), destination_function)
+```
+
+```{r print-destination-long}
+display_table(destination_function_long)
+```
+
+```{r print-function-map-audit}
+display_table(function_map_audit)
+```
+
+```{r print-composition-destination}
+display_table(composition_destination)
+```
+
+# 8. Filter and transformation audit
+
+The final pooled CSVs retain every row from every successfully loaded file. The rows excluded from analytical key universes are reported below; no source observation is silently removed.
+
+```{r prepare-filter-audit}
+filter_audit <- bind_rows(
+  tibble(
+    step = "Census source-file validation",
+    dataset = "Census",
+    condition = "Keep only files with every required column, compatible values, and matching folder/workbook country",
+    rows_before = sum(schema_audit$source_rows[schema_audit$dataset == "Census"], na.rm = TRUE),
+    rows_after = nrow(census),
+    relevant_keys_before = NA_integer_,
+    relevant_keys_after = n_distinct(
+      paste(census$country, census$instrument_id),
+      na.rm = TRUE
+    )
+  ),
+  tibble(
+    step = "Allocation source-file validation",
+    dataset = "Allocation",
+    condition = "Keep only files with every required column, compatible values, and matching folder/workbook country",
+    rows_before = sum(schema_audit$source_rows[schema_audit$dataset == "Allocation"], na.rm = TRUE),
+    rows_after = nrow(allocation),
+    relevant_keys_before = NA_integer_,
+    relevant_keys_after = n_distinct(
+      paste(allocation$country, allocation$pair_id),
+      na.rm = TRUE
+    )
+  ),
+  tibble(
+    step = "Census analytical key universe",
+    dataset = "Census",
+    condition = "Exclude rows with missing country or instrument_id from distinct-key counts only",
+    rows_before = nrow(census),
+    rows_after = sum(
+      !is_missing_value(census$country) &
+        !is_missing_value(census$instrument_id)
+    ),
+    relevant_keys_before = n_distinct(
+      paste(census$country, census$instrument_id),
+      na.rm = TRUE
+    ),
+    relevant_keys_after = n_distinct(
+      paste(
+        census$country[
+          !is_missing_value(census$country) &
+            !is_missing_value(census$instrument_id)
+        ],
+        census$instrument_id[
+          !is_missing_value(census$country) &
+            !is_missing_value(census$instrument_id)
+        ]
+      )
+    )
+  ),
+  tibble(
+    step = "Allocation analytical key universe",
+    dataset = "Allocation",
+    condition = "Exclude rows with missing country or pair_id from distinct allocation counts only",
+    rows_before = nrow(allocation),
+    rows_after = sum(
+      !is_missing_value(allocation$country) &
+        !is_missing_value(allocation$pair_id)
+    ),
+    relevant_keys_before = n_distinct(
+      paste(allocation$country, allocation$pair_id),
+      na.rm = TRUE
+    ),
+    relevant_keys_after = n_distinct(
+      paste(
+        allocation$country[
+          !is_missing_value(allocation$country) &
+            !is_missing_value(allocation$pair_id)
+        ],
+        allocation$pair_id[
+          !is_missing_value(allocation$country) &
+            !is_missing_value(allocation$pair_id)
+        ]
+      )
+    )
+  ),
+  tibble(
+    step = "Successful census_ref links",
+    dataset = "Allocation to Census",
+    condition = "Retain only unambiguous same-country resolved reference values for E and is_earmarked",
+    rows_before = nrow(reference_resolution),
+    rows_after = sum(reference_resolution$successfully_resolved),
+    relevant_keys_before = n_distinct(
+      paste(
+        reference_resolution$country,
+        reference_resolution$ref_token_trimmed
+      ),
+      na.rm = TRUE
+    ),
+    relevant_keys_after = nrow(resolved_links)
+  )
+)
+```
+
+```{r print-filter-audit}
+display_table(filter_audit)
+```
+
+# 9. Save pooled data and analytical tables
+
+```{r save-and-verify-csv}
+write_csv(census, census_output_path, na = "")
+write_csv(allocation, allocation_output_path, na = "")
+
+census_saved_check <- read_csv(
+  census_output_path,
+  col_types = cols(.default = col_character()),
+  show_col_types = FALSE,
+  progress = FALSE
+)
+allocation_saved_check <- read_csv(
+  allocation_output_path,
+  col_types = cols(.default = col_character()),
+  show_col_types = FALSE,
+  progress = FALSE
+)
+
+stopifnot(
+  nrow(census_saved_check) == nrow(census),
+  nrow(allocation_saved_check) == nrow(allocation),
+  identical(names(census_saved_check), c(census_columns, "is_earmarked")),
+  identical(names(allocation_saved_check), allocation_columns)
+)
+
+stack_reconciliation <- stack_reconciliation %>%
+  mutate(
+    saved_csv_rows = if_else(
+      dataset == "Census",
+      nrow(census_saved_check),
+      nrow(allocation_saved_check)
+    ),
+    csv_rows_reconcile = saved_csv_rows == stacked_rows,
+    exact_output_columns = if_else(
+      dataset == "Census",
+      identical(names(census_saved_check), c(census_columns, "is_earmarked")),
+      identical(names(allocation_saved_check), allocation_columns)
+    )
+  )
+
+stopifnot(
+  all(stack_reconciliation$csv_rows_reconcile),
+  all(stack_reconciliation$exact_output_columns)
+)
+```
+
+## Final row-count reconciliation
+
+```{r print-final-reconciliation}
+display_table(stack_reconciliation)
+```
+
+```{r prepare-run-summary}
+overall_resolution <- reference_resolution_summary %>%
+  filter(country == "Overall")
+
+unexpected_category_count <- category_audit %>%
+  filter(expected_status == "unexpected") %>%
+  summarise(n = sum(n_rows)) %>%
+  pull(n)
+
+unmapped_function_count <- function_map_audit %>%
+  filter(mapping_status == "unmapped") %>%
+  summarise(n = sum(n_distinct_pair_function_links)) %>%
+  pull(n)
+
+if (length(unmapped_function_count) == 0L) unmapped_function_count <- 0L
+
+run_summary <- tribble(
+  ~section, ~metric, ~value, ~note,
+  "Scope", "Database interpretation", "de jure legal inventory", "Not collections, transfers, disbursements, or expenditure execution",
+  "Scope", "Census analytical key", "country + instrument_id", "Cross-country IDs are never pooled as a single key",
+  "Scope", "Allocation analytical key", "country + pair_id", "One canonical statutory allocation channel",
+  "Files", "Census files found", as.character(sum(file_inventory$dataset == "Census")), "Canonical final XLSX candidates",
+  "Files", "Census files loaded", as.character(sum(file_inventory$dataset == "Census" & file_inventory$final_status == "loaded")), "Schema- and type-valid files",
+  "Files", "Allocation files found", as.character(sum(file_inventory$dataset == "Allocation")), "Canonical final XLSX candidates",
+  "Files", "Allocation files loaded", as.character(sum(file_inventory$dataset == "Allocation" & file_inventory$final_status == "loaded")), "Schema- and type-valid files",
+  "Rows", "Census pooled rows", as.character(nrow(census)), "Final CSV includes is_earmarked",
+  "Rows", "Allocation pooled rows", as.character(nrow(allocation)), "Broad canonical allocation layer",
+  "Countries", "Census countries", as.character(n_distinct(census$country)), "COD Census is excluded because its final XLSX lacks base_division",
+  "Countries", "Allocation countries", as.character(n_distinct(allocation$country)), "All valid final allocation files",
+  "References", "Flattened census_ref values", as.character(overall_resolution$n_reference_values), "Occurrence-level denominator",
+  "References", "Successfully resolved values", as.character(overall_resolution$n_resolved), "Unambiguous same-country links only",
+  "References", "Percent resolved", format(overall_resolution$pct_resolved, digits = 8), "Stored as a proportion",
+  "References", "Direct instrument_id fallback resolutions", as.character(overall_resolution$n_resolved_instrument_id), "Explicitly supported after evidence-ID matching",
+  "References", "Namespace-overlap resolutions", as.character(overall_resolution$n_namespace_overlap_same_record), "Evidence_id and instrument_id identify the same unique row",
+  "Warnings", "Unresolved reference values", as.character(overall_resolution$n_reference_values - overall_resolution$n_resolved), "See ref_resolution_issues",
+  "Warnings", "Duplicated allocation pair groups", as.character(nrow(duplicate_allocation_pair)), "See dup_allocation_pair and pair_conflicts",
+  "Warnings", "Unexpected category observations", as.character(unexpected_category_count), "Values are reported, not recoded",
+  "Warnings", "Unmapped destination-function links", as.character(unmapped_function_count), "GFSM codes are joined to COFOG mapping; specials preserved",
+  "Destination functions", "Non-additivity note", "Counts and shares can exceed allocation totals or 100%", "One allocation may finance several functions",
+  "Sources", "Source-version rule", "Final XLSX files are authoritative", "Intermediate or same-stem JSON files are not substituted"
+)
+```
+
+## Run summary
+
+```{r print-run-summary}
+display_table(run_summary)
+```
+
+```{r stage-workbook-tables, include=FALSE}
+workbook_tables <- list(
+  run_summary = run_summary,
+  file_status_summary = file_status_summary,
+  file_inventory = file_inventory,
+  schema_audit = schema_audit,
+  type_audit = type_audit,
+  stack_reconciliation = stack_reconciliation,
+  filter_audit = filter_audit,
+  country_overlap = country_overlap,
+  country_key_counts = country_key_counts,
+  missing_by_column = missing_by_column,
+  missing_ids = missing_ids,
+  dup_evidence_id = duplicate_evidence_id,
+  dup_census_instrument = duplicate_census_instrument,
+  dup_allocation_pair = duplicate_allocation_pair,
+  dup_full_rows = duplicate_full_rows,
+  pair_conflicts = pair_conflicts,
+  category_audit = category_audit,
+  document_years = document_years,
+  ref_resolution_summary = reference_resolution_summary,
+  ref_resolution_issues = reference_resolution_issues,
+  census_coverage = census_coverage,
+  allocation_coverage = allocation_coverage,
+  database_glance = database_glance,
+  destination_long = destination_function_long,
+  function_map_audit = function_map_audit,
+  comp_assignment = composition_assignment,
+  comp_nature = composition_nature,
+  comp_purpose = composition_purpose,
+  comp_beneficiary = composition_beneficiary,
+  comp_destination = composition_destination
+)
+
+serialize_table <- function(data, name) {
+  rows <- map(seq_len(nrow(data)), function(i) {
+    set_names(
+      map(data, function(column) {
+        value <- column[[i]]
+        if (length(value) == 0L || is.na(value)) NA else unname(value)
+      }),
+      names(data)
+    )
+  })
+
+  list(
+    name = name,
+    columns = names(data),
+    rows = rows
+  )
+}
+
+workbook_manifest <- list(
+  title = "SSA revenue instruments: initial descriptives",
+  generated_at = format(Sys.time(), "%Y-%m-%d %H:%M:%S %Z"),
+  output_path = normalizePath(
+    workbook_output_path,
+    winslash = "/",
+    mustWork = FALSE
+  ),
+  sheets = imap(workbook_tables, serialize_table)
+)
+
+write_json(
+  workbook_manifest,
+  manifest_path,
+  auto_unbox = TRUE,
+  pretty = TRUE,
+  na = "null",
+  digits = NA
+)
+```
+
+The workbook is authored from the staged tables with the project’s spreadsheet tooling and is verified separately after this notebook completes.

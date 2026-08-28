@@ -1,0 +1,1047 @@
+---
+title: "Earmark incidence and macro-fiscal indicators"
+author: "IMF research project"
+date: "`r format(Sys.Date(), '%Y-%m-%d')`"
+output:
+  html_document:
+    toc: true
+    toc_depth: 3
+    df_print: paged
+---
+
+This notebook describes cross-country associations between functional-earmark
+incidence in the selected legal Census corpus and six macro-fiscal indicators.
+It is a descriptive exercise only: the fitted lines and correlations are not
+causal estimates. The legal database is de jure and does not measure revenue
+collection or expenditure execution.
+
+```{r setup, include=FALSE}
+input_path <- knitr::current_input(dir = TRUE)
+project_root <- normalizePath(
+  file.path(dirname(input_path), "..", ".."),
+  winslash = "/",
+  mustWork = TRUE
+)
+
+knitr::opts_knit$set(root.dir = project_root)
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+
+library(dplyr)
+library(tidyr)
+library(purrr)
+library(readr)
+library(readxl)
+library(stringr)
+library(tibble)
+library(ggplot2)
+library(ggrepel)
+library(scales)
+library(knitr)
+
+options(stringsAsFactors = FALSE, scipen = 999)
+
+input_paths <- c(
+  incidence = file.path(
+    project_root,
+    "analysis", "tables", "partial_exclusive", "02_country_summary.csv"
+  ),
+  corpus_coverage = file.path(
+    project_root,
+    "analysis", "tables", "general", "01_country_corpus_coverage.csv"
+  ),
+  imf_world = file.path(project_root, "data", "world_imf_2026.xlsx")
+)
+
+table_dir <- file.path(
+  project_root, "analysis", "tables", "partial_exclusive"
+)
+figure_dir <- file.path(
+  project_root, "analysis", "figures", "partial_exclusive"
+)
+dir.create(table_dir, recursive = TRUE, showWarnings = FALSE)
+dir.create(figure_dir, recursive = TRUE, showWarnings = FALSE)
+
+excluded_countries <- c("GHA", "NGA", "ZAF")
+
+indicator_meta <- tribble(
+  ~macro_indicator, ~indicator, ~indicator_label, ~plot_title, ~x_axis_label, ~output_stem,
+  "TaxInc", "income_profit_taxes", "Income and profit taxes",
+  "Earmark incidence and income and profit taxes",
+  "Income and profit taxes (% of GDP)",
+  "12_earmark_incidence_income_profit_tax",
+  "TaxSal", "sales_production_taxes", "Sales and production taxes",
+  "Earmark incidence and sales and production taxes",
+  "Sales and production taxes (% of GDP)",
+  "12_earmark_incidence_sales_production_tax",
+  "TaxPro", "property_taxes", "Property taxes",
+  "Earmark incidence and property taxes",
+  "Property taxes (% of GDP)",
+  "12_earmark_incidence_property_tax",
+  "Grants", "grants", "Grants",
+  "Earmark incidence and grants",
+  "Grants (% of GDP)",
+  "12_earmark_incidence_grants",
+  "TaxRev", "tax_revenue", "Tax revenue",
+  "Earmark incidence and overall tax revenue",
+  "Tax revenue (% of GDP)",
+  "12_earmark_incidence_tax_revenue",
+  "TaxTra", "international_trade_taxes", "Taxes on international trade",
+  "Earmark incidence and taxes on international trade",
+  "Taxes on international trade (% of GDP)",
+  "12_earmark_incidence_international_trade_tax"
+) %>%
+  mutate(indicator_order = row_number())
+
+display_table <- function(data, digits = 4) {
+  if (nrow(data) == 0L) {
+    cat("No rows to report.\n")
+  } else {
+    knitr::kable(data, digits = digits, row.names = FALSE)
+  }
+}
+
+is_blank <- function(values) {
+  is.na(values) | str_trim(as.character(values)) == ""
+}
+
+strict_numeric <- function(values, field, dataset) {
+  if (is.numeric(values)) {
+    return(as.double(values))
+  }
+  character_values <- str_trim(as.character(values))
+  parsed_values <- suppressWarnings(
+    parse_double(character_values, na = c("", "NA"))
+  )
+  invalid <- !is.na(character_values) & character_values != "" &
+    is.na(parsed_values)
+  if (any(invalid)) {
+    stop(
+      dataset, "$", field, " contains non-numeric values: ",
+      paste(unique(character_values[invalid]), collapse = "; ")
+    )
+  }
+  parsed_values
+}
+
+same_table_values <- function(saved, expected) {
+  identical(names(saved), names(expected)) &&
+    nrow(saved) == nrow(expected) &&
+    isTRUE(all.equal(
+      as.data.frame(saved),
+      as.data.frame(expected),
+      check.attributes = FALSE,
+      tolerance = 1e-12
+    ))
+}
+```
+
+# 1. Load and validate the sources
+
+All inputs are read without modification. The incidence file is explicitly
+read as semicolon-delimited because that is its saved format; the corpus
+coverage file is comma-delimited.
+
+```{r load-and-validate-inputs}
+missing_inputs <- names(input_paths)[!file.exists(input_paths)]
+if (length(missing_inputs) > 0L) {
+  stop(
+    "Missing required input files: ",
+    paste(missing_inputs, collapse = "; ")
+  )
+}
+
+input_md5_before <- unname(tools::md5sum(input_paths))
+
+incidence_header <- read_lines(
+  input_paths[["incidence"]], n_max = 1L, progress = FALSE
+)
+if (!str_detect(incidence_header, fixed(";"))) {
+  stop("02_country_summary.csv is not semicolon-delimited as expected.")
+}
+
+incidence_raw <- read_delim(
+  input_paths[["incidence"]],
+  delim = ";",
+  col_types = cols(.default = col_character()),
+  trim_ws = TRUE,
+  show_col_types = FALSE,
+  progress = FALSE
+)
+
+coverage_raw <- read_csv(
+  input_paths[["corpus_coverage"]],
+  col_types = cols(.default = col_character()),
+  show_col_types = FALSE,
+  progress = FALSE
+)
+
+imf_raw <- read_excel(
+  input_paths[["imf_world"]],
+  sheet = "Data",
+  na = c("", "NA")
+)
+
+required_fields <- list(
+  incidence = c("country", "allocation_incidence_E_D"),
+  corpus_coverage = c(
+    "dataset", "country", "n_documents", "document_years", "corpus_type"
+  ),
+  imf_world = c("ISO3", "year", indicator_meta$macro_indicator)
+)
+
+source_objects <- list(
+  incidence = incidence_raw,
+  corpus_coverage = coverage_raw,
+  imf_world = imf_raw
+)
+
+input_inventory <- imap_dfr(source_objects, function(data, source) {
+  missing_fields <- setdiff(required_fields[[source]], names(data))
+  tibble(
+    source = source,
+    file = basename(input_paths[[source]]),
+    rows = nrow(data),
+    columns = ncol(data),
+    missing_required_fields = if (length(missing_fields) == 0L) {
+      NA_character_
+    } else {
+      paste(missing_fields, collapse = "; ")
+    },
+    schema_status = if_else(
+      length(missing_fields) == 0L, "valid", "invalid"
+    )
+  )
+})
+
+if (any(input_inventory$schema_status == "invalid")) {
+  print(input_inventory)
+  stop("At least one input is missing required columns.")
+}
+```
+
+```{r display-input-inventory}
+display_table(input_inventory)
+```
+
+# 2. Define the Francophone sample and legal-snapshot year
+
+The requested sample rule is implemented exactly: every country in the saved
+partial/exclusive country summary is retained except Ghana, Nigeria, and South
+Africa. No additional language or regional filter is applied.
+
+```{r define-sample}
+incidence <- incidence_raw %>%
+  transmute(
+    country = str_trim(country),
+    allocation_incidence_E_D = strict_numeric(
+      allocation_incidence_E_D,
+      "allocation_incidence_E_D",
+      "02_country_summary.csv"
+    )
+  )
+
+incidence_key_problems <- incidence %>%
+  filter(is_blank(country)) %>%
+  bind_rows(
+    incidence %>%
+      filter(!is_blank(country)) %>%
+      count(country, name = "n_rows") %>%
+      filter(n_rows != 1L) %>%
+      mutate(allocation_incidence_E_D = NA_real_)
+  )
+
+incidence_value_problems <- incidence %>%
+  filter(
+    is.na(allocation_incidence_E_D) |
+      allocation_incidence_E_D < 0 |
+      allocation_incidence_E_D > 1
+  )
+
+if (nrow(incidence_key_problems) > 0L ||
+    nrow(incidence_value_problems) > 0L) {
+  print(incidence_key_problems)
+  print(incidence_value_problems)
+  stop("Country keys or incidence values are invalid.")
+}
+
+excluded_sample_rows <- incidence %>%
+  filter(country %in% excluded_countries) %>%
+  arrange(country)
+
+francophone_incidence <- incidence %>%
+  filter(!country %in% excluded_countries) %>%
+  arrange(country)
+
+sample_audit <- tibble(
+  measure = c(
+    "Countries in source summary",
+    "Countries excluded by instruction",
+    "Countries retained"
+  ),
+  n_countries = c(
+    n_distinct(incidence$country),
+    n_distinct(excluded_sample_rows$country),
+    n_distinct(francophone_incidence$country)
+  ),
+  countries = c(
+    paste(sort(unique(incidence$country)), collapse = "; "),
+    paste(sort(unique(excluded_sample_rows$country)), collapse = "; "),
+    paste(sort(unique(francophone_incidence$country)), collapse = "; ")
+  )
+)
+```
+
+```{r derive-cgi-years}
+coverage_census <- coverage_raw %>%
+  filter(dataset == "Census") %>%
+  mutate(
+    country = str_trim(country),
+    year_tokens = str_extract_all(
+      document_years,
+      "(?<![0-9])[0-9]{4}(?![0-9])"
+    ),
+    n_year_tokens = lengths(year_tokens),
+    CGI_year = map_int(
+      year_tokens,
+      ~if (length(.x) == 1L) as.integer(.x) else NA_integer_
+    )
+  ) %>%
+  select(
+    country, n_documents, document_years, corpus_type,
+    n_year_tokens, CGI_year
+  )
+
+coverage_key_problems <- coverage_census %>%
+  filter(!is_blank(country)) %>%
+  count(country, name = "n_rows") %>%
+  filter(n_rows != 1L)
+
+unmatched_incidence_to_coverage <- francophone_incidence %>%
+  anti_join(coverage_census, by = "country")
+unmatched_coverage_to_incidence <- coverage_census %>%
+  filter(!country %in% excluded_countries) %>%
+  anti_join(francophone_incidence, by = "country")
+
+year_audit <- francophone_incidence %>%
+  left_join(coverage_census, by = "country") %>%
+  arrange(country)
+
+missing_or_ambiguous_cgi_years <- year_audit %>%
+  filter(is.na(CGI_year) | n_year_tokens != 1L)
+
+if (nrow(coverage_key_problems) > 0L ||
+    nrow(unmatched_incidence_to_coverage) > 0L ||
+    nrow(missing_or_ambiguous_cgi_years) > 0L) {
+  print(coverage_key_problems)
+  print(unmatched_incidence_to_coverage)
+  print(missing_or_ambiguous_cgi_years)
+  stop(
+    "A unique saved Census/CGI legal-snapshot year could not be established ",
+    "for every retained country. No year was inferred."
+  )
+}
+
+country_analysis_base <- year_audit %>%
+  select(country, CGI_year, allocation_incidence_E_D) %>%
+  arrange(country)
+```
+
+```{r display-sample-and-year-audit}
+display_table(sample_audit)
+display_table(
+  year_audit %>%
+    select(
+      country, allocation_incidence_E_D, n_documents,
+      document_years, corpus_type, CGI_year
+    )
+)
+cat(
+  "Unmatched retained countries in corpus coverage: ",
+  nrow(unmatched_incidence_to_coverage), ".\n",
+  "Non-excluded Census countries absent from the incidence summary: ",
+  nrow(unmatched_coverage_to_incidence), ".\n",
+  "Missing or ambiguous CGI years: ",
+  nrow(missing_or_ambiguous_cgi_years), ".\n",
+  sep = ""
+)
+```
+
+# 3. Prepare the IMF series and construct the three-year windows
+
+For country `i`, each requested macro average uses available non-missing values
+in `CGI_year`, `CGI_year + 1`, and `CGI_year + 2`. Missing years and values are
+left missing; they are not replaced by earlier or later observations.
+
+```{r prepare-imf-data}
+imf_data <- imf_raw %>%
+  transmute(
+    country = str_trim(as.character(ISO3)),
+    year = strict_numeric(year, "year", "world_imf_2026.xlsx"),
+    across(
+      all_of(indicator_meta$macro_indicator),
+      ~strict_numeric(.x, cur_column(), "world_imf_2026.xlsx")
+    )
+  )
+
+non_integer_years <- imf_data %>%
+  filter(!is.na(year), year != floor(year))
+if (nrow(non_integer_years) > 0L) {
+  print(non_integer_years)
+  stop("The IMF year field contains non-integer values.")
+}
+imf_data <- imf_data %>% mutate(year = as.integer(year))
+
+imf_key_problems <- imf_data %>%
+  filter(!is_blank(country), !is.na(year)) %>%
+  count(country, year, name = "n_rows") %>%
+  filter(n_rows != 1L)
+
+unmatched_incidence_to_imf <- country_analysis_base %>%
+  anti_join(imf_data %>% distinct(country), by = "country")
+
+if (nrow(imf_key_problems) > 0L) {
+  print(imf_key_problems)
+  stop("The IMF data contain duplicate country-year rows.")
+}
+
+imf_year_coverage <- imf_data %>%
+  summarise(
+    first_year = min(year, na.rm = TRUE),
+    last_year = max(year, na.rm = TRUE),
+    n_country_year_rows = n()
+  )
+```
+
+```{r construct-macro-averages}
+macro_window_grid <- country_analysis_base %>%
+  crossing(year_offset = 0:2) %>%
+  mutate(year = CGI_year + year_offset)
+
+imf_long <- imf_data %>%
+  select(country, year, all_of(indicator_meta$macro_indicator)) %>%
+  pivot_longer(
+    cols = all_of(indicator_meta$macro_indicator),
+    names_to = "macro_indicator",
+    values_to = "macro_value"
+  )
+
+macro_window_observations <- macro_window_grid %>%
+  select(country, CGI_year, allocation_incidence_E_D, year) %>%
+  crossing(macro_indicator = indicator_meta$macro_indicator) %>%
+  left_join(
+    imf_long,
+    by = c("country", "year", "macro_indicator")
+  ) %>%
+  left_join(
+    indicator_meta %>%
+      select(macro_indicator, indicator, indicator_label, indicator_order),
+    by = "macro_indicator"
+  ) %>%
+  arrange(country, indicator_order, year)
+
+macro_averages <- macro_window_observations %>%
+  group_by(
+    country, CGI_year, allocation_incidence_E_D,
+    macro_indicator, indicator, indicator_label, indicator_order
+  ) %>%
+  summarise(
+    start_year = first(CGI_year),
+    end_year = first(CGI_year) + 2L,
+    n_years_used = sum(!is.na(macro_value)),
+    macro_3yr_average = if (n_years_used == 0L) {
+      NA_real_
+    } else {
+      mean(macro_value, na.rm = TRUE)
+    },
+    .groups = "drop"
+  ) %>%
+  mutate(fewer_than_3_years = n_years_used < 3L) %>%
+  arrange(country, indicator_order) %>%
+  select(
+    country,
+    CGI_year,
+    start_year,
+    end_year,
+    allocation_incidence_E_D,
+    macro_indicator,
+    indicator,
+    indicator_label,
+    macro_3yr_average,
+    n_years_used,
+    fewer_than_3_years
+  )
+
+average_validation <- macro_averages %>%
+  mutate(
+    valid_start = start_year == CGI_year,
+    valid_end = end_year == CGI_year + 2L,
+    valid_n = n_years_used >= 0L & n_years_used <= 3L,
+    valid_missing_rule = is.na(macro_3yr_average) == (n_years_used == 0L),
+    valid_flag = fewer_than_3_years == (n_years_used < 3L)
+  ) %>%
+  filter(!(valid_start & valid_end & valid_n & valid_missing_rule & valid_flag))
+
+if (nrow(average_validation) > 0L) {
+  print(average_validation)
+  stop("At least one three-year average failed its construction checks.")
+}
+
+missing_macro_observations <- macro_window_observations %>%
+  filter(is.na(macro_value)) %>%
+  group_by(country, macro_indicator, indicator_label) %>%
+  summarise(
+    missing_years = paste(year, collapse = "; "),
+    n_missing_years = n(),
+    .groups = "drop"
+  ) %>%
+  mutate(indicator_order = match(
+    macro_indicator, indicator_meta$macro_indicator
+  )) %>%
+  arrange(country, indicator_order) %>%
+  select(-indicator_order)
+
+short_window_audit <- macro_averages %>%
+  filter(fewer_than_3_years) %>%
+  arrange(country, match(macro_indicator, indicator_meta$macro_indicator)) %>%
+  select(
+    country, macro_indicator, indicator_label,
+    start_year, end_year, n_years_used,
+    macro_3yr_average, fewer_than_3_years
+  )
+```
+
+```{r display-imf-and-window-audits}
+display_table(imf_year_coverage)
+cat(
+  "Countries in the incidence sample without any IMF country rows: ",
+  nrow(unmatched_incidence_to_imf), ".\n",
+  "Duplicate IMF country-year keys: ", nrow(imf_key_problems), ".\n",
+  sep = ""
+)
+display_table(missing_macro_observations)
+display_table(short_window_audit)
+```
+
+# 4. Complete-case plot samples and correlations
+
+Each correlation uses exactly the complete country observations displayed in
+the corresponding scatter plot.
+
+```{r construct-plot-data-and-correlations}
+plot_data_by_indicator <- set_names(
+  map(indicator_meta$macro_indicator, function(indicator_code) {
+    macro_averages %>%
+      filter(
+        macro_indicator == indicator_code,
+        !is.na(macro_3yr_average),
+        !is.na(allocation_incidence_E_D)
+      ) %>%
+      arrange(country) %>%
+      select(
+        country,
+        CGI_year,
+        start_year,
+        end_year,
+        allocation_incidence_E_D,
+        macro_indicator,
+        indicator,
+        indicator_label,
+        macro_3yr_average,
+        n_years_used,
+        fewer_than_3_years
+      )
+  }),
+  indicator_meta$macro_indicator
+)
+
+calculate_correlations <- function(data, indicator_code) {
+  n_countries <- nrow(data)
+  enough_variation <- n_countries >= 2L &&
+    length(unique(data$macro_3yr_average)) > 1L &&
+    length(unique(data$allocation_incidence_E_D)) > 1L
+  tibble(
+    macro_indicator = indicator_code,
+    n_countries = n_countries,
+    pearson_r = if (enough_variation) {
+      cor(
+        data$macro_3yr_average,
+        data$allocation_incidence_E_D,
+        method = "pearson"
+      )
+    } else {
+      NA_real_
+    },
+    spearman_rho = if (enough_variation) {
+      cor(
+        data$macro_3yr_average,
+        data$allocation_incidence_E_D,
+        method = "spearman"
+      )
+    } else {
+      NA_real_
+    }
+  )
+}
+
+correlation_summary <- imap_dfr(
+  plot_data_by_indicator,
+  ~calculate_correlations(.x, .y)
+) %>%
+  left_join(
+    indicator_meta %>%
+      select(macro_indicator, indicator, indicator_label, indicator_order),
+    by = "macro_indicator"
+  ) %>%
+  arrange(indicator_order) %>%
+  select(
+    indicator,
+    macro_indicator,
+    indicator_label,
+    n_countries,
+    pearson_r,
+    spearman_rho
+  )
+
+correlation_reconciliation <- imap_dfr(
+  plot_data_by_indicator,
+  function(data, indicator_code) {
+    tibble(
+      macro_indicator = indicator_code,
+      plot_rows = nrow(data),
+      distinct_countries = n_distinct(data$country),
+      correlation_n = correlation_summary %>%
+        filter(macro_indicator == indicator_code) %>%
+        pull(n_countries),
+      duplicate_countries = sum(duplicated(data$country))
+    )
+  }
+) %>%
+  mutate(
+    passed = plot_rows == distinct_countries &
+      plot_rows == correlation_n &
+      duplicate_countries == 0L
+  )
+
+if (!all(correlation_reconciliation$passed)) {
+  print(correlation_reconciliation %>% filter(!passed))
+  stop("Plot samples and correlation samples do not reconcile.")
+}
+```
+
+```{r display-correlations}
+display_table(correlation_summary)
+display_table(correlation_reconciliation)
+```
+
+# 5. Scatter plots
+
+```{r define-scatter-plot-function}
+make_scatter_plot <- function(plot_data, indicator_code) {
+  meta <- indicator_meta %>%
+    filter(macro_indicator == indicator_code)
+  correlation_row <- correlation_summary %>%
+    filter(macro_indicator == indicator_code)
+
+  pearson_text <- if (is.na(correlation_row$pearson_r)) {
+    "NA"
+  } else {
+    sprintf("%.2f", correlation_row$pearson_r)
+  }
+
+  has_fit <- nrow(plot_data) >= 2L &&
+    length(unique(plot_data$macro_3yr_average)) > 1L &&
+    length(unique(plot_data$allocation_incidence_E_D)) > 1L
+
+  plot_object <- ggplot(
+    plot_data,
+    aes(
+      x = macro_3yr_average,
+      y = allocation_incidence_E_D
+    )
+  )
+
+  if (has_fit) {
+    plot_object <- plot_object +
+      geom_smooth(
+        method = "lm",
+        formula = y ~ x,
+        se = FALSE,
+        colour = "#17365D",
+        linewidth = 0.95
+      )
+  }
+
+  plot_object +
+    geom_point(
+      shape = 21,
+      size = 4.8,
+      stroke = 0.9,
+      fill = "#1F4E79",
+      colour = "#FFFFFF"
+    ) +
+    geom_text_repel(
+      aes(label = country),
+      seed = 20260826,
+      size = 5.0,
+      colour = "#2F3A44",
+      fontface = "bold",
+      box.padding = 0.45,
+      point.padding = 0.35,
+      min.segment.length = 0,
+      segment.colour = "#8A969F",
+      segment.size = 0.35,
+      max.overlaps = Inf
+    ) +
+    scale_x_continuous(
+      labels = label_number(accuracy = 0.1, suffix = "%"),
+      expand = expansion(mult = c(0.08, 0.18))
+    ) +
+    scale_y_continuous(
+      breaks = seq(0, 0.30, by = 0.10),
+      labels = label_percent(accuracy = 1),
+      expand = expansion(mult = c(0.02, 0.18))
+    ) +
+    coord_cartesian(ylim = c(0, 0.35)) +
+    labs(
+      title = meta$plot_title,
+      subtitle = paste0(
+        "Cross-country association \u00b7 Pearson r = ", pearson_text
+      ),
+      x = meta$x_axis_label,
+      y = paste0(
+        "Share of identified Census instruments\n",
+        "linked to functional earmarks"
+      ),
+      caption = str_wrap(
+        paste0(
+          "Note: Descriptive cross-country association only; the fitted ",
+          "line is not causal. Earmark incidence is measured relative to ",
+          "the selected legal Census corpus. Macro averages use available ",
+          "non-missing observations over the three-year window beginning in the CGI year."
+        ),
+        width = 125
+      )
+    ) +
+    theme_minimal(base_size = 15) +
+    theme(
+      plot.title.position = "plot",
+      plot.title = element_text(
+        face = "bold", colour = "#222222", size = 19
+      ),
+      plot.subtitle = element_text(
+        colour = "#4D4D4D", size = 14,
+        margin = margin(b = 12)
+      ),
+      plot.caption = element_text(
+        colour = "#666666", hjust = 0, size = 10.5,
+        margin = margin(t = 12)
+      ),
+      axis.title = element_text(
+        face = "bold", colour = "#333333", size = 14.5
+      ),
+      axis.text = element_text(colour = "#333333", size = 13),
+      axis.line = element_line(
+        colour = "#333333", linewidth = 0.65
+      ),
+      panel.grid.minor = element_blank(),
+      panel.grid.major = element_line(
+        colour = "#E1E6EA", linewidth = 0.45
+      ),
+      plot.margin = margin(14, 26, 14, 18)
+    )
+}
+
+plot_objects <- set_names(
+  map(indicator_meta$macro_indicator, function(indicator_code) {
+    make_scatter_plot(
+      plot_data_by_indicator[[indicator_code]],
+      indicator_code
+    )
+  }),
+  indicator_meta$macro_indicator
+)
+```
+
+## Income and profit taxes
+
+```{r display-income-profit-tax-scatter, echo=FALSE}
+print(plot_objects[["TaxInc"]])
+```
+
+## Sales and production taxes
+
+```{r display-sales-production-tax-scatter, echo=FALSE}
+print(plot_objects[["TaxSal"]])
+```
+
+## Property taxes
+
+```{r display-property-tax-scatter, echo=FALSE}
+print(plot_objects[["TaxPro"]])
+```
+
+## Grants
+
+```{r display-grants-scatter, echo=FALSE}
+print(plot_objects[["Grants"]])
+```
+
+## Tax revenue
+
+```{r display-tax-revenue-scatter, echo=FALSE}
+print(plot_objects[["TaxRev"]])
+```
+
+## Taxes on international trade
+
+```{r display-international-trade-tax-scatter, echo=FALSE}
+print(plot_objects[["TaxTra"]])
+```
+
+# 6. Save and verify the output bundle
+
+```{r define-output-paths}
+merged_output_path <- file.path(
+  table_dir, "12_earmark_incidence_macro_3yr_averages.csv"
+)
+correlation_output_path <- file.path(
+  table_dir, "12_earmark_incidence_macro_correlations.csv"
+)
+
+plot_csv_paths <- set_names(
+  file.path(table_dir, paste0(indicator_meta$output_stem, ".csv")),
+  indicator_meta$macro_indicator
+)
+plot_png_paths <- set_names(
+  file.path(figure_dir, paste0(indicator_meta$output_stem, ".png")),
+  indicator_meta$macro_indicator
+)
+
+expected_csv_data <- c(
+  list(
+    merged = macro_averages,
+    correlations = correlation_summary
+  ),
+  plot_data_by_indicator
+)
+
+final_csv_paths <- c(
+  merged = merged_output_path,
+  correlations = correlation_output_path,
+  plot_csv_paths
+)
+```
+
+```{r stage-and-verify-outputs}
+stage_dir <- tempfile(pattern = "12_macro_fiscal_stage_")
+dir.create(stage_dir, recursive = TRUE, showWarnings = FALSE)
+
+stage_csv_paths <- set_names(
+  file.path(stage_dir, basename(final_csv_paths)),
+  names(final_csv_paths)
+)
+stage_png_paths <- set_names(
+  file.path(stage_dir, basename(plot_png_paths)),
+  names(plot_png_paths)
+)
+
+iwalk(expected_csv_data, function(data, name) {
+  write_csv(data, stage_csv_paths[[name]], na = "")
+})
+
+iwalk(plot_objects, function(plot_object, indicator_code) {
+  ggsave(
+    filename = stage_png_paths[[indicator_code]],
+    plot = plot_object,
+    width = 11.5,
+    height = 8.2,
+    units = "in",
+    dpi = 300,
+    bg = "white"
+  )
+})
+
+staged_csv_checks <- imap_dfr(
+  expected_csv_data,
+  function(expected, name) {
+    saved <- read_csv(
+      stage_csv_paths[[name]],
+      show_col_types = FALSE,
+      progress = FALSE
+    )
+    tibble(
+      output = name,
+      rows = nrow(saved),
+      columns = ncol(saved),
+      passed = same_table_values(saved, expected)
+    )
+  }
+)
+
+staged_png_checks <- imap_dfr(
+  plot_objects,
+  function(plot_object, indicator_code) {
+    tibble(
+      macro_indicator = indicator_code,
+      png_bytes = file.info(stage_png_paths[[indicator_code]])$size,
+      passed = file.exists(stage_png_paths[[indicator_code]]) &&
+        file.info(stage_png_paths[[indicator_code]])$size > 10000
+    )
+  }
+)
+
+if (!all(staged_csv_checks$passed) || !all(staged_png_checks$passed)) {
+  print(staged_csv_checks %>% filter(!passed))
+  print(staged_png_checks %>% filter(!passed))
+  stop("Staged CSV or PNG verification failed; final outputs were unchanged.")
+}
+```
+
+```{r commit-output-bundle}
+stage_paths <- c(
+  set_names(unname(stage_csv_paths), paste0(names(stage_csv_paths), "_csv")),
+  set_names(unname(stage_png_paths), paste0(names(stage_png_paths), "_png"))
+)
+final_paths <- c(
+  set_names(unname(final_csv_paths), paste0(names(final_csv_paths), "_csv")),
+  set_names(unname(plot_png_paths), paste0(names(plot_png_paths), "_png"))
+)
+
+commit_output_bundle <- function(stage_paths, final_paths) {
+  existed_before <- set_names(file.exists(final_paths), names(final_paths))
+  backup_dir <- tempfile(pattern = "12_macro_fiscal_backup_")
+  dir.create(backup_dir, recursive = TRUE, showWarnings = FALSE)
+  backup_paths <- set_names(
+    file.path(backup_dir, basename(final_paths)),
+    names(final_paths)
+  )
+  committed <- FALSE
+
+  on.exit({
+    if (!committed) {
+      for (name in names(final_paths)) {
+        if (existed_before[[name]] && file.exists(backup_paths[[name]])) {
+          file.copy(
+            backup_paths[[name]], final_paths[[name]], overwrite = TRUE
+          )
+        } else if (!existed_before[[name]] && file.exists(final_paths[[name]])) {
+          file.remove(final_paths[[name]])
+        }
+      }
+    }
+    unlink(stage_dir, recursive = TRUE, force = TRUE)
+    unlink(backup_dir, recursive = TRUE, force = TRUE)
+  }, add = TRUE)
+
+  for (name in names(final_paths)[existed_before]) {
+    if (!file.copy(
+      final_paths[[name]], backup_paths[[name]], overwrite = FALSE
+    )) {
+      stop("Could not create a rollback copy for ", name, ".")
+    }
+  }
+
+  commit_ok <- vapply(
+    names(final_paths),
+    function(name) file.copy(
+      stage_paths[[name]], final_paths[[name]], overwrite = TRUE
+    ),
+    logical(1)
+  )
+  if (!all(commit_ok)) {
+    stop("Could not commit the complete output bundle.")
+  }
+  committed <- TRUE
+  invisible(TRUE)
+}
+
+commit_output_bundle(stage_paths, final_paths)
+```
+
+```{r verify-final-outputs}
+final_csv_checks <- imap_dfr(
+  expected_csv_data,
+  function(expected, name) {
+    saved <- read_csv(
+      final_csv_paths[[name]],
+      show_col_types = FALSE,
+      progress = FALSE
+    )
+    tibble(
+      output = name,
+      path = final_csv_paths[[name]],
+      rows = nrow(saved),
+      csv_matches = same_table_values(saved, expected)
+    )
+  }
+)
+
+final_png_checks <- imap_dfr(
+  plot_objects,
+  function(plot_object, indicator_code) {
+    tibble(
+      macro_indicator = indicator_code,
+      path = plot_png_paths[[indicator_code]],
+      png_bytes = file.info(plot_png_paths[[indicator_code]])$size,
+      png_valid = file.exists(plot_png_paths[[indicator_code]]) &&
+        file.info(plot_png_paths[[indicator_code]])$size > 10000
+    )
+  }
+)
+
+input_md5_after <- unname(tools::md5sum(input_paths))
+input_preservation_check <- tibble(
+  input = names(input_paths),
+  md5_before = input_md5_before,
+  md5_after = input_md5_after,
+  unchanged = md5_before == md5_after
+)
+
+if (!all(final_csv_checks$csv_matches) ||
+    !all(final_png_checks$png_valid) ||
+    !all(input_preservation_check$unchanged)) {
+  print(final_csv_checks %>% filter(!csv_matches))
+  print(final_png_checks %>% filter(!png_valid))
+  print(input_preservation_check %>% filter(!unchanged))
+  stop("Final output or input-preservation checks failed.")
+}
+```
+
+```{r display-output-checks}
+display_table(input_preservation_check)
+display_table(final_csv_checks)
+display_table(final_png_checks)
+```
+
+# 7. Completion summary
+
+```{r completion-summary, results='asis'}
+zero_year_rows <- macro_averages %>% filter(n_years_used == 0L)
+short_nonzero_rows <- macro_averages %>%
+  filter(n_years_used > 0L, n_years_used < 3L)
+
+cat(
+  "- Francophone countries retained: ",
+  n_distinct(francophone_incidence$country),
+  " (", paste(francophone_incidence$country, collapse = ", "), ").\n",
+  "- Countries excluded by instruction: ",
+  paste(excluded_countries, collapse = ", "), ".\n",
+  "- IMF data end in ", imf_year_coverage$last_year, ".\n",
+  "- Country-variable averages with zero usable years: ",
+  nrow(zero_year_rows), ".\n",
+  "- Country-variable averages based on one or two years: ",
+  nrow(short_nonzero_rows), ".\n",
+  "- Countries used by indicator: ",
+  paste0(
+    correlation_summary$macro_indicator,
+    " = ", correlation_summary$n_countries,
+    collapse = "; "
+  ),
+  ".\n",
+  "- Unmatched retained countries in IMF data: ",
+  nrow(unmatched_incidence_to_imf), ".\n",
+  "- No causal interpretation is attached to the fitted lines or ",
+  "correlations.\n",
+  sep = ""
+)
+```

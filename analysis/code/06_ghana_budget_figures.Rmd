@@ -1,0 +1,1005 @@
+---
+title: "Ghana earmarked-fund budgets"
+author: "IMF research project"
+date: "`r format(Sys.Date(), '%Y-%m-%d')`"
+output:
+  html_document:
+    toc: true
+    toc_depth: 2
+    df_print: paged
+---
+
+This notebook produces six figures on Ghana's budgeted allocations to earmarked funds. The figures describe nominal budget appropriations and their share of total government expenditure; they do not measure actual transfers, disbursements, or expenditure execution. Each PNG is paired with a CSV containing the exact data used to draw it.
+
+```{r setup, include=FALSE}
+if (.Platform$OS.type == "windows") {
+  active_utf8_locale <- Sys.setlocale(
+    "LC_CTYPE",
+    "English_United States.utf8"
+  )
+  if (identical(active_utf8_locale, "")) {
+    stop("A UTF-8 locale is required to preserve source text and GH¢ labels.")
+  }
+}
+
+input_path <- knitr::current_input(dir = TRUE)
+project_root <- normalizePath(
+  file.path(dirname(input_path), "..", ".."),
+  winslash = "/",
+  mustWork = TRUE
+)
+
+knitr::opts_knit$set(root.dir = project_root)
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+
+library(readxl)
+library(dplyr)
+library(tidyr)
+library(readr)
+library(stringr)
+library(tibble)
+library(ggplot2)
+library(scales)
+library(knitr)
+
+options(stringsAsFactors = FALSE, scipen = 999)
+
+figure_dir <- file.path(
+  project_root, "analysis", "figures", "ghana_budgets"
+)
+table_dir <- file.path(
+  project_root, "analysis", "tables", "ghana_budgets"
+)
+dir.create(figure_dir, recursive = TRUE, showWarnings = FALSE)
+dir.create(table_dir, recursive = TRUE, showWarnings = FALSE)
+
+input_paths <- c(
+  all_earmarked_funds = file.path(
+    project_root,
+    "countries", "GHA", "outputs", "budgets",
+    "earmarked_fund_budgets.xlsx"
+  ),
+  exclusive_funds = file.path(
+    project_root,
+    "countries", "GHA", "outputs", "budgets",
+    "exclusive_earmark_budgets.xlsx"
+  ),
+  exclusive_total = file.path(
+    project_root,
+    "countries", "GHA", "outputs", "budgets",
+    "total_exclusive_earmarked_fund_budgets.xlsx"
+  )
+)
+
+missing_inputs <- input_paths[!file.exists(input_paths)]
+if (length(missing_inputs) > 0) {
+  stop("Missing Ghana budget input(s): ", paste(missing_inputs, collapse = "; "))
+}
+
+source_md5_before <- unname(tools::md5sum(input_paths))
+
+# Muted presentation palette. Navy identifies the broad earmarked-fund total;
+# burnt orange identifies exclusive-earmark funds throughout.
+broad_navy <- "#1F4E79"
+broad_light <- "#A9BBC8"
+exclusive_orange <- "#B36A1E"
+exclusive_light <- "#E3C08A"
+grid_grey <- "#D9E0E5"
+
+theme_ghana <- theme_minimal(base_size = 14, base_family = "sans") +
+  theme(
+    plot.title.position = "plot",
+    plot.title = element_text(
+      face = "bold", colour = "#222222", size = 19
+    ),
+    plot.subtitle = element_text(
+      colour = "#4D4D4D", size = 14, margin = margin(b = 12)
+    ),
+    plot.caption = element_text(
+      colour = "#666666", hjust = 0, size = 10.5,
+      margin = margin(t = 12)
+    ),
+    axis.title = element_text(
+      face = "bold", colour = "#333333", size = 13
+    ),
+    axis.text = element_text(colour = "#333333", size = 12),
+    strip.text = element_text(
+      face = "bold", colour = "#2B2B2B", size = 12.5,
+      lineheight = 1.05
+    ),
+    strip.background = element_rect(fill = "#F2F4F5", colour = NA),
+    panel.grid.minor = element_blank(),
+    panel.grid.major.x = element_blank(),
+    panel.grid.major.y = element_line(colour = grid_grey, linewidth = 0.35),
+    legend.position = "none",
+    plot.margin = margin(14, 22, 14, 14)
+  )
+
+write_plot_csv <- function(data, stem) {
+  write_csv(
+    data,
+    file.path(table_dir, paste0(stem, ".csv")),
+    na = ""
+  )
+}
+
+save_plot <- function(plot_object, stem, width, height) {
+  ggsave(
+    filename = file.path(figure_dir, paste0(stem, ".png")),
+    plot = plot_object,
+    width = width,
+    height = height,
+    units = "in",
+    dpi = 300,
+    bg = "white"
+  )
+}
+
+validate_required_columns <- function(data, required, source_name) {
+  missing_columns <- setdiff(required, names(data))
+  if (length(missing_columns) > 0) {
+    stop(
+      source_name, " is missing required column(s): ",
+      paste(missing_columns, collapse = "; ")
+    )
+  }
+}
+
+validate_numeric_columns <- function(data, fields, source_name) {
+  incompatible <- fields[!vapply(data[fields], is.numeric, logical(1))]
+  if (length(incompatible) > 0) {
+    stop(
+      source_name, " has incompatible non-numeric field(s): ",
+      paste(incompatible, collapse = "; ")
+    )
+  }
+}
+
+is_absent_note <- function(values) {
+  coalesce(str_to_lower(str_trim(as.character(values))) == "absent", FALSE)
+}
+
+duplicate_group_count <- function(data, keys) {
+  data %>%
+    group_by(across(all_of(keys))) %>%
+    summarise(n = n(), .groups = "drop") %>%
+    filter(n > 1) %>%
+    nrow()
+}
+
+add_extreme_annotations <- function(data, value_field) {
+  observed <- data %>% filter(!is.na(.data[[value_field]]))
+  if (nrow(observed) == 0) {
+    return(
+      data %>%
+        mutate(
+          annotation_role = NA_character_,
+          annotation_label = NA_character_,
+          annotation_hjust = NA_real_
+        )
+    )
+  }
+
+  markers <- bind_rows(
+    observed %>%
+      slice_min(year, n = 1, with_ties = FALSE) %>%
+      transmute(year, annotation_role = "First"),
+    observed %>%
+      slice_max(year, n = 1, with_ties = FALSE) %>%
+      transmute(year, annotation_role = "Last"),
+    observed %>%
+      slice_min(.data[[value_field]], n = 1, with_ties = FALSE) %>%
+      transmute(year, annotation_role = "Minimum"),
+    observed %>%
+      slice_max(.data[[value_field]], n = 1, with_ties = FALSE) %>%
+      transmute(year, annotation_role = "Maximum")
+  ) %>%
+    group_by(year) %>%
+    summarise(
+      annotation_role = paste(unique(annotation_role), collapse = " / "),
+      .groups = "drop"
+    )
+
+  first_year <- min(observed$year)
+  last_year <- max(observed$year)
+
+  data %>%
+    left_join(markers, by = "year") %>%
+    mutate(
+      annotation_label = if_else(
+        !is.na(annotation_role),
+        percent(.data[[value_field]], accuracy = 0.1),
+        NA_character_
+      ),
+      annotation_hjust = case_when(
+        year == first_year ~ -0.10,
+        year == last_year ~ 1.10,
+        TRUE ~ 0.5
+      )
+    )
+}
+```
+
+# 1. Load and validate the source workbooks
+
+```{r load-source-workbooks}
+all_funds_raw <- suppressMessages(
+  read_excel(input_paths[["all_earmarked_funds"]], sheet = "Feuil1")
+)
+exclusive_funds_raw <- suppressMessages(
+  read_excel(input_paths[["exclusive_funds"]], sheet = "Feuil1")
+)
+exclusive_total_raw <- suppressMessages(
+  read_excel(input_paths[["exclusive_total"]], sheet = "Feuil1")
+)
+
+fund_level_required <- c(
+  "budget_year", "fund_key", "fund_label_as_published",
+  "budget_ghc", "source_notes", "canonical_fund_label",
+  "total_expenditure", "share_of_total_expenditure"
+)
+exclusive_total_required <- c(
+  "budget_year", "direct_earmark_budget_ghc",
+  "total_expenditure_ghc", "share_of_total_expenditure"
+)
+
+validate_required_columns(
+  all_funds_raw, fund_level_required, "earmarked_fund_budgets.xlsx"
+)
+validate_required_columns(
+  exclusive_funds_raw,
+  fund_level_required,
+  "exclusive_earmark_budgets.xlsx"
+)
+validate_required_columns(
+  exclusive_total_raw,
+  exclusive_total_required,
+  "total_exclusive_earmarked_fund_budgets.xlsx"
+)
+
+validate_numeric_columns(
+  all_funds_raw,
+  c(
+    "budget_year", "budget_ghc", "total_expenditure",
+    "share_of_total_expenditure"
+  ),
+  "earmarked_fund_budgets.xlsx"
+)
+validate_numeric_columns(
+  exclusive_funds_raw,
+  c(
+    "budget_year", "budget_ghc", "total_expenditure",
+    "share_of_total_expenditure"
+  ),
+  "exclusive_earmark_budgets.xlsx"
+)
+validate_numeric_columns(
+  exclusive_total_raw,
+  c(
+    "budget_year", "direct_earmark_budget_ghc",
+    "total_expenditure_ghc", "share_of_total_expenditure"
+  ),
+  "total_exclusive_earmarked_fund_budgets.xlsx"
+)
+
+all_year_values <- c(
+  all_funds_raw$budget_year,
+  exclusive_funds_raw$budget_year,
+  exclusive_total_raw$budget_year
+)
+if (any(!is.na(all_year_values) & all_year_values != floor(all_year_values))) {
+  stop("A budget-year field contains a non-integer numeric value.")
+}
+
+all_transfers_raw <- all_funds_raw %>%
+  filter(fund_key == "grants_total")
+if (nrow(all_transfers_raw) == 0) {
+  stop("No fund_key == 'grants_total' observations were found.")
+}
+```
+
+## Source coverage and integrity checks
+
+```{r compute-source-validation}
+make_validation_row <- function(
+  data,
+  source_name,
+  keys,
+  budget_field = "budget_ghc",
+  total_fund_field = "fund_key"
+) {
+  absent_rows <- if ("source_notes" %in% names(data)) {
+    is_absent_note(data$source_notes)
+  } else {
+    rep(FALSE, nrow(data))
+  }
+
+  tibble(
+    source = source_name,
+    years_available = paste(
+      sort(unique(data$budget_year[!is.na(data$budget_year)])),
+      collapse = "; "
+    ),
+    n_rows = nrow(data),
+    n_funds = if (total_fund_field %in% names(data)) {
+      n_distinct(data[[total_fund_field]], na.rm = TRUE)
+    } else {
+      NA_integer_
+    },
+    missing_year = sum(is.na(data$budget_year)),
+    missing_budget_ghc = sum(is.na(data[[budget_field]])),
+    missing_share_of_total_expenditure = sum(
+      is.na(data$share_of_total_expenditure)
+    ),
+    rows_marked_absent = sum(absent_rows),
+    explicit_zero_budget_rows = sum(
+      data[[budget_field]] == 0 & !absent_rows,
+      na.rm = TRUE
+    ),
+    duplicate_key_groups = duplicate_group_count(data, keys)
+  )
+}
+
+source_validation <- bind_rows(
+  make_validation_row(
+    all_funds_raw,
+    "earmarked_fund_budgets.xlsx — complete workbook",
+    c("budget_year", "fund_key")
+  ),
+  make_validation_row(
+    all_transfers_raw,
+    "earmarked_fund_budgets.xlsx — grants_total used in Plots 1–2",
+    c("budget_year", "fund_key")
+  ),
+  make_validation_row(
+    exclusive_funds_raw,
+    "exclusive_earmark_budgets.xlsx",
+    c("budget_year", "fund_key")
+  ),
+  make_validation_row(
+    exclusive_total_raw,
+    "total_exclusive_earmarked_fund_budgets.xlsx",
+    "budget_year",
+    budget_field = "direct_earmark_budget_ghc",
+    total_fund_field = ""
+  )
+)
+
+if (any(source_validation$duplicate_key_groups > 0)) {
+  stop("Duplicate year/fund observations make the requested plot grain ambiguous.")
+}
+
+exclusive_fund_inventory <- exclusive_funds_raw %>%
+  distinct(fund_key, canonical_fund_label) %>%
+  arrange(canonical_fund_label)
+
+if (nrow(exclusive_fund_inventory) !=
+    n_distinct(exclusive_funds_raw$fund_key)) {
+  stop("An exclusive fund_key maps to more than one canonical fund name.")
+}
+
+exclusive_zero_audit <- exclusive_funds_raw %>%
+  transmute(
+    year = as.integer(budget_year),
+    fund_key,
+    fund_name = canonical_fund_label,
+    raw_budget_ghc = budget_ghc,
+    raw_share_of_total_expenditure = share_of_total_expenditure,
+    source_notes = as.character(source_notes),
+    plotting_treatment = case_when(
+      is_absent_note(source_notes) ~ "Gap: source note marks observation absent",
+      budget_ghc == 0 ~ "Explicit zero: plotted at zero",
+      TRUE ~ "Observed positive value"
+    )
+  ) %>%
+  filter(raw_budget_ghc == 0 | is_absent_note(source_notes)) %>%
+  arrange(fund_name, year)
+```
+
+```{r print-source-validation}
+kable(
+  source_validation,
+  caption = "Ghana budget source coverage, missingness, and key integrity"
+)
+
+cat(
+  "Exclusive-earmark funds found:",
+  n_distinct(exclusive_funds_raw$fund_key), "\n"
+)
+kable(
+  exclusive_fund_inventory,
+  caption = "Exclusive-earmark funds represented in the source workbook"
+)
+
+kable(
+  exclusive_zero_audit,
+  caption = paste(
+    "Zero and source-absent observations.",
+    "Rows marked absent are plotted as gaps; explicit zeros remain at zero."
+  )
+)
+```
+
+Two Plastic Waste Recycling Fund rows are numerically stored as zero but marked `absent` in the source notes. For plotting only, those observations are treated as missing and shown as gaps. The raw zero fields remain in the exported CSVs. The separately reported 2024 and 2025 zeros are explicit source values and remain plotted at zero.
+
+# 2. Prepare the six plot datasets
+
+```{r prepare-annual-total-data}
+all_transfers_base <- all_transfers_raw %>%
+  transmute(
+    year = as.integer(budget_year),
+    fund_key,
+    fund_name = canonical_fund_label,
+    fund_label_as_published,
+    budget_ghc,
+    total_expenditure_ghc = total_expenditure,
+    share_of_total_expenditure
+  ) %>%
+  arrange(year)
+
+exclusive_total_base <- exclusive_total_raw %>%
+  transmute(
+    year = as.integer(budget_year),
+    budget_ghc = direct_earmark_budget_ghc,
+    total_expenditure_ghc,
+    share_of_total_expenditure
+  ) %>%
+  arrange(year)
+
+if (any(is.na(all_transfers_base$year)) ||
+    any(is.na(exclusive_total_base$year))) {
+  stop("Annual-total year is missing; an x-axis position cannot be assigned.")
+}
+
+common_share_y_max <- ceiling(
+  100 * max(
+    all_transfers_base$share_of_total_expenditure,
+    exclusive_total_base$share_of_total_expenditure,
+    na.rm = TRUE
+  ) / 5
+) * 5 / 100
+
+common_amount_y_max_billions <- ceiling(
+  max(
+    all_transfers_base$budget_ghc,
+    exclusive_total_base$budget_ghc,
+    na.rm = TRUE
+  ) / 1000000000 / 10
+) * 10
+
+all_transfers_share_data <- all_transfers_base %>%
+  add_extreme_annotations("share_of_total_expenditure") %>%
+  mutate(y_axis_max = common_share_y_max)
+
+exclusive_total_share_data <- exclusive_total_base %>%
+  add_extreme_annotations("share_of_total_expenditure") %>%
+  mutate(y_axis_max = common_share_y_max)
+
+all_transfers_amount_data <- all_transfers_base %>%
+  mutate(
+    budget_ghc_billions = budget_ghc / 1000000000,
+    year_role = if_else(year == max(year), "Latest year", "Earlier year"),
+    latest_value_label = if_else(
+      year_role == "Latest year",
+      paste0("GH¢", number(budget_ghc_billions, accuracy = 0.1), "bn"),
+      NA_character_
+    ),
+    y_axis_max_billions = common_amount_y_max_billions
+  )
+
+exclusive_total_amount_data <- exclusive_total_base %>%
+  mutate(
+    budget_ghc_billions = budget_ghc / 1000000000,
+    year_role = if_else(year == max(year), "Latest year", "Earlier year"),
+    latest_value_label = if_else(
+      year_role == "Latest year",
+      paste0("GH¢", number(budget_ghc_billions, accuracy = 0.1), "bn"),
+      NA_character_
+    ),
+    y_axis_max_billions = common_amount_y_max_billions
+  )
+```
+
+```{r prepare-exclusive-fund-data}
+exclusive_funds_observed <- exclusive_funds_raw %>%
+  transmute(
+    year = as.integer(budget_year),
+    fund_key,
+    fund_label_as_published,
+    fund_name = canonical_fund_label,
+    source_notes = as.character(source_notes),
+    raw_budget_ghc = budget_ghc,
+    total_expenditure_ghc = total_expenditure,
+    raw_share_of_total_expenditure = share_of_total_expenditure,
+    is_source_absent = is_absent_note(source_notes),
+    budget_ghc = if_else(is_source_absent, NA_real_, raw_budget_ghc),
+    share_of_total_expenditure = if_else(
+      is_source_absent,
+      NA_real_,
+      raw_share_of_total_expenditure
+    )
+  )
+
+exclusive_years <- seq(
+  min(exclusive_funds_observed$year, na.rm = TRUE),
+  max(exclusive_funds_observed$year, na.rm = TRUE)
+)
+fund_lookup <- exclusive_funds_observed %>%
+  distinct(fund_key, fund_name)
+
+# Completing the year grid makes a genuinely absent annual row visible as a
+# gap instead of connecting the surrounding observations.
+exclusive_funds_complete <- expand_grid(
+  fund_key = sort(unique(exclusive_funds_observed$fund_key)),
+  year = exclusive_years
+) %>%
+  left_join(exclusive_funds_observed, by = c("fund_key", "year")) %>%
+  select(-fund_name) %>%
+  left_join(fund_lookup, by = "fund_key")
+
+fund_display_rules <- exclusive_funds_complete %>%
+  group_by(fund_key, fund_name) %>%
+  summarise(
+    total_budget_ghc = sum(budget_ghc, na.rm = TRUE),
+    max_budget_ghc = max(budget_ghc, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  arrange(desc(total_budget_ghc), fund_name) %>%
+  mutate(
+    fund_order = row_number(),
+    display_unit = if_else(
+      max_budget_ghc >= 1000000000,
+      "GH¢ billions",
+      "GH¢ millions"
+    ),
+    unit_divisor = if_else(
+      display_unit == "GH¢ billions",
+      1000000000,
+      1000000
+    ),
+    fund_panel_share = str_wrap(fund_name, width = 27),
+    fund_panel_amount = paste0(
+      str_wrap(fund_name, width = 27),
+      "\n(", display_unit, ")"
+    )
+  )
+
+fund_panel_share_levels <- fund_display_rules %>%
+  arrange(fund_order) %>%
+  pull(fund_panel_share)
+fund_panel_amount_levels <- fund_display_rules %>%
+  arrange(fund_order) %>%
+  pull(fund_panel_amount)
+
+exclusive_funds_plot_data <- exclusive_funds_complete %>%
+  left_join(fund_display_rules, by = c("fund_key", "fund_name")) %>%
+  mutate(
+    budget_display = budget_ghc / unit_divisor,
+    fund_panel_share = factor(
+      fund_panel_share,
+      levels = fund_panel_share_levels
+    ),
+    fund_panel_amount = factor(
+      fund_panel_amount,
+      levels = fund_panel_amount_levels
+    ),
+    plotting_treatment = case_when(
+      is_source_absent ~ "Gap: source note marks observation absent",
+      budget_ghc == 0 ~ "Explicit zero: plotted at zero",
+      is.na(budget_ghc) ~ "Gap: missing observation",
+      TRUE ~ "Observed value"
+    )
+  ) %>%
+  arrange(fund_order, year)
+
+exclusive_fund_share_y_max <- ceiling(
+  max(
+    exclusive_funds_plot_data$share_of_total_expenditure,
+    na.rm = TRUE
+  ) * 100
+) / 100
+
+exclusive_fund_share_data <- exclusive_funds_plot_data %>%
+  mutate(shared_y_axis_max = exclusive_fund_share_y_max)
+
+exclusive_fund_amount_data <- exclusive_funds_plot_data
+```
+
+# 3. All earmarked funds — annual total
+
+## All earmarked-fund transfers as a share of expenditure
+
+```{r print-all-transfers-share-data}
+kable(all_transfers_share_data)
+```
+
+```{r plot-all-transfers-share, fig.width=12, fig.height=7.5}
+all_transfers_share_plot <- ggplot(
+  all_transfers_share_data,
+  aes(x = year, y = share_of_total_expenditure)
+) +
+  geom_line(colour = broad_navy, linewidth = 1.15, na.rm = FALSE) +
+  geom_point(colour = broad_navy, size = 3.1, na.rm = TRUE) +
+  geom_text(
+    data = all_transfers_share_data %>%
+      filter(!is.na(annotation_label)),
+    aes(
+      label = annotation_label,
+      hjust = annotation_hjust
+    ),
+    vjust = -0.9,
+    colour = broad_navy,
+    fontface = "bold",
+    size = 4.4,
+    show.legend = FALSE
+  ) +
+  scale_x_continuous(
+    breaks = all_transfers_share_data$year,
+    expand = expansion(mult = c(0.035, 0.035))
+  ) +
+  scale_y_continuous(
+    limits = c(0, common_share_y_max),
+    labels = label_percent(accuracy = 1),
+    expand = expansion(mult = c(0, 0))
+  ) +
+  coord_cartesian(clip = "off") +
+  labs(
+    title = "Earmarked-fund transfers as a share of government expenditure",
+    subtitle = "Ghana's annual budget allocation to all earmarked funds",
+    x = NULL,
+    y = "Share of total expenditure",
+    caption = paste(
+      "Labels identify the first, last, minimum, and maximum observations.",
+      "Budget appropriations do not measure actual execution."
+    )
+  ) +
+  theme_ghana
+
+write_plot_csv(
+  all_transfers_share_data,
+  "06_ghana_all_earmarked_transfers_share"
+)
+save_plot(
+  all_transfers_share_plot,
+  "06_ghana_all_earmarked_transfers_share",
+  width = 12,
+  height = 7.5
+)
+all_transfers_share_plot
+```
+
+## All earmarked-fund transfers in nominal Ghana cedis
+
+```{r print-all-transfers-amount-data}
+kable(all_transfers_amount_data)
+```
+
+```{r plot-all-transfers-amount, fig.width=12, fig.height=7.5}
+all_transfers_amount_plot <- ggplot(
+  all_transfers_amount_data,
+  aes(x = factor(year), y = budget_ghc_billions, fill = year_role)
+) +
+  geom_col(width = 0.70) +
+  geom_text(
+    data = all_transfers_amount_data %>%
+      filter(year_role == "Latest year"),
+    aes(label = latest_value_label),
+    vjust = -0.55,
+    colour = broad_navy,
+    fontface = "bold",
+    size = 4.4
+  ) +
+  scale_fill_manual(
+    values = c("Earlier year" = broad_light, "Latest year" = broad_navy)
+  ) +
+  scale_y_continuous(
+    limits = c(0, common_amount_y_max_billions),
+    breaks = breaks_pretty(n = 5),
+    labels = label_number(accuracy = 1),
+    expand = expansion(mult = c(0, 0))
+  ) +
+  labs(
+    title = "Budgeted transfers to all earmarked funds",
+    subtitle = "Nominal Ghana cedis; the latest budget year is highlighted",
+    x = NULL,
+    y = "Nominal budget (GH¢ billions)",
+    caption = "Budget appropriations do not measure actual transfers or expenditure execution."
+  ) +
+  theme_ghana
+
+write_plot_csv(
+  all_transfers_amount_data,
+  "06_ghana_all_earmarked_transfers_amount"
+)
+save_plot(
+  all_transfers_amount_plot,
+  "06_ghana_all_earmarked_transfers_amount",
+  width = 12,
+  height = 7.5
+)
+all_transfers_amount_plot
+```
+
+# 4. Exclusive-earmark funds — by fund
+
+## Exclusive-earmark funds as a share of expenditure
+
+```{r print-exclusive-fund-share-data}
+kable(exclusive_fund_share_data)
+```
+
+```{r plot-exclusive-fund-share, fig.width=16, fig.height=10.5}
+exclusive_fund_share_plot <- ggplot(
+  exclusive_fund_share_data,
+  aes(
+    x = year,
+    y = share_of_total_expenditure,
+    group = fund_key
+  )
+) +
+  geom_line(colour = exclusive_orange, linewidth = 0.95, na.rm = FALSE) +
+  geom_point(colour = exclusive_orange, size = 2.6, na.rm = TRUE) +
+  facet_wrap(~fund_panel_share, ncol = 4) +
+  scale_x_continuous(
+    breaks = seq(min(exclusive_years), max(exclusive_years), by = 2),
+    minor_breaks = NULL
+  ) +
+  scale_y_continuous(
+    limits = c(0, exclusive_fund_share_y_max),
+    labels = label_percent(accuracy = 0.1),
+    expand = expansion(mult = c(0, 0.04))
+  ) +
+  labs(
+    title = "Budget shares of exclusively earmarked funds",
+    subtitle = "Each panel uses the same percentage scale",
+    x = NULL,
+    y = "Share of total expenditure",
+    caption = paste(
+      "Source-absent observations are shown as gaps; explicit zeros remain at zero.",
+      "Budget appropriations do not measure actual execution."
+    )
+  ) +
+  theme_ghana +
+  theme(panel.spacing = grid::unit(1.25, "lines"))
+
+write_plot_csv(
+  exclusive_fund_share_data,
+  "06_ghana_exclusive_fund_shares_by_fund"
+)
+save_plot(
+  exclusive_fund_share_plot,
+  "06_ghana_exclusive_fund_shares_by_fund",
+  width = 16,
+  height = 10.5
+)
+exclusive_fund_share_plot
+```
+
+## Exclusive-earmark fund allocations in nominal Ghana cedis
+
+```{r print-exclusive-fund-amount-data}
+kable(exclusive_fund_amount_data)
+```
+
+```{r plot-exclusive-fund-amount, fig.width=16, fig.height=10.5}
+exclusive_fund_amount_plot <- ggplot(
+  exclusive_fund_amount_data,
+  aes(x = year, y = budget_display, group = fund_key)
+) +
+  geom_ribbon(
+    aes(ymin = 0, ymax = budget_display),
+    fill = exclusive_light,
+    alpha = 0.45,
+    colour = NA,
+    na.rm = FALSE
+  ) +
+  geom_line(colour = exclusive_orange, linewidth = 0.95, na.rm = FALSE) +
+  geom_point(colour = exclusive_orange, size = 2.6, na.rm = TRUE) +
+  facet_wrap(~fund_panel_amount, ncol = 4, scales = "free_y") +
+  scale_x_continuous(
+    breaks = seq(min(exclusive_years), max(exclusive_years), by = 2),
+    minor_breaks = NULL
+  ) +
+  scale_y_continuous(
+    labels = label_number(accuracy = 0.1, big.mark = ","),
+    expand = expansion(mult = c(0, 0.10))
+  ) +
+  labs(
+    title = "Budget allocations to exclusively earmarked funds",
+    subtitle = "Nominal GH¢ millions or billions according to fund size. Scales vary by panel.",
+    x = NULL,
+    y = "Nominal budget (panel-specific units)",
+    caption = paste(
+      "Source-absent observations are shown as gaps; explicit zeros remain at zero.",
+      "Budget appropriations do not measure actual execution."
+    )
+  ) +
+  theme_ghana +
+  theme(panel.spacing = grid::unit(1.25, "lines"))
+
+write_plot_csv(
+  exclusive_fund_amount_data,
+  "06_ghana_exclusive_fund_amounts_by_fund"
+)
+save_plot(
+  exclusive_fund_amount_plot,
+  "06_ghana_exclusive_fund_amounts_by_fund",
+  width = 16,
+  height = 10.5
+)
+exclusive_fund_amount_plot
+```
+
+# 5. Exclusive-earmark funds — annual total
+
+## Annual total share of government expenditure
+
+```{r print-exclusive-total-share-data}
+kable(exclusive_total_share_data)
+```
+
+```{r plot-exclusive-total-share, fig.width=12, fig.height=7.5}
+exclusive_total_share_plot <- ggplot(
+  exclusive_total_share_data,
+  aes(x = year, y = share_of_total_expenditure)
+) +
+  geom_line(colour = exclusive_orange, linewidth = 1.15, na.rm = FALSE) +
+  geom_point(colour = exclusive_orange, size = 3.1, na.rm = TRUE) +
+  geom_text(
+    data = exclusive_total_share_data %>%
+      filter(!is.na(annotation_label)),
+    aes(
+      label = annotation_label,
+      hjust = annotation_hjust
+    ),
+    vjust = -0.9,
+    colour = exclusive_orange,
+    fontface = "bold",
+    size = 4.4,
+    show.legend = FALSE
+  ) +
+  scale_x_continuous(
+    breaks = exclusive_total_share_data$year,
+    expand = expansion(mult = c(0.035, 0.035))
+  ) +
+  scale_y_continuous(
+    limits = c(0, common_share_y_max),
+    labels = label_percent(accuracy = 1),
+    expand = expansion(mult = c(0, 0))
+  ) +
+  coord_cartesian(clip = "off") +
+  labs(
+    title = "Exclusive-earmark allocations as a share of government expenditure",
+    subtitle = "Annual total across Ghana's exclusively earmarked funds",
+    x = NULL,
+    y = "Share of total expenditure",
+    caption = paste(
+      "Labels identify the first, last, minimum, and maximum observations.",
+      "The percentage scale matches the all-funds share figure."
+    )
+  ) +
+  theme_ghana
+
+write_plot_csv(
+  exclusive_total_share_data,
+  "06_ghana_total_exclusive_fund_share"
+)
+save_plot(
+  exclusive_total_share_plot,
+  "06_ghana_total_exclusive_fund_share",
+  width = 12,
+  height = 7.5
+)
+exclusive_total_share_plot
+```
+
+## Annual total in nominal Ghana cedis
+
+```{r print-exclusive-total-amount-data}
+kable(exclusive_total_amount_data)
+```
+
+```{r plot-exclusive-total-amount, fig.width=12, fig.height=7.5}
+exclusive_total_amount_plot <- ggplot(
+  exclusive_total_amount_data,
+  aes(x = factor(year), y = budget_ghc_billions, fill = year_role)
+) +
+  geom_col(width = 0.70) +
+  geom_text(
+    data = exclusive_total_amount_data %>%
+      filter(year_role == "Latest year"),
+    aes(label = latest_value_label),
+    vjust = -0.55,
+    colour = exclusive_orange,
+    fontface = "bold",
+    size = 4.4
+  ) +
+  scale_fill_manual(
+    values = c(
+      "Earlier year" = exclusive_light,
+      "Latest year" = exclusive_orange
+    )
+  ) +
+  scale_y_continuous(
+    limits = c(0, common_amount_y_max_billions),
+    breaks = breaks_pretty(n = 5),
+    labels = label_number(accuracy = 1),
+    expand = expansion(mult = c(0, 0))
+  ) +
+  labs(
+    title = "Total budget allocations to exclusively earmarked funds",
+    subtitle = "Nominal Ghana cedis; the latest budget year is highlighted",
+    x = NULL,
+    y = "Nominal budget (GH¢ billions)",
+    caption = paste(
+      "The y-axis matches the all-funds amount figure.",
+      "Budget appropriations do not measure actual execution."
+    )
+  ) +
+  theme_ghana
+
+write_plot_csv(
+  exclusive_total_amount_data,
+  "06_ghana_total_exclusive_fund_amount"
+)
+save_plot(
+  exclusive_total_amount_plot,
+  "06_ghana_total_exclusive_fund_amount",
+  width = 12,
+  height = 7.5
+)
+exclusive_total_amount_plot
+```
+
+# 6. Output and source-integrity checks
+
+```{r verify-outputs}
+expected_outputs <- tribble(
+  ~stem, ~expected_rows,
+  "06_ghana_all_earmarked_transfers_share", 10L,
+  "06_ghana_all_earmarked_transfers_amount", 10L,
+  "06_ghana_exclusive_fund_shares_by_fund", 63L,
+  "06_ghana_exclusive_fund_amounts_by_fund", 63L,
+  "06_ghana_total_exclusive_fund_share", 9L,
+  "06_ghana_total_exclusive_fund_amount", 9L
+)
+
+output_inventory <- expected_outputs %>%
+  rowwise() %>%
+  mutate(
+    csv_path = file.path(table_dir, paste0(stem, ".csv")),
+    png_path = file.path(figure_dir, paste0(stem, ".png")),
+    csv_exists = file.exists(csv_path),
+    png_exists = file.exists(png_path),
+    csv_rows = if (csv_exists) {
+      nrow(suppressMessages(read_csv(csv_path, show_col_types = FALSE)))
+    } else {
+      NA_integer_
+    },
+    png_bytes = if (png_exists) file.info(png_path)$size else NA_real_
+  ) %>%
+  ungroup()
+
+if (any(!output_inventory$csv_exists) ||
+    any(!output_inventory$png_exists) ||
+    any(output_inventory$csv_rows != output_inventory$expected_rows) ||
+    any(output_inventory$png_bytes <= 0, na.rm = TRUE)) {
+  stop("One or more Ghana budget figure/CSV output checks failed.")
+}
+
+source_md5_after <- unname(tools::md5sum(input_paths))
+source_integrity <- tibble(
+  source = names(input_paths),
+  md5_before = source_md5_before,
+  md5_after = source_md5_after,
+  unchanged = source_md5_before == source_md5_after
+)
+if (any(!source_integrity$unchanged)) {
+  stop("A source workbook changed during the analysis.")
+}
+
+kable(output_inventory)
+kable(source_integrity)
+```
+
+The workflow creates six matched PNG/CSV pairs. It includes ten annual observations for all earmarked-fund totals (2017–2026), seven exclusive-earmark funds observed over 2018–2026, and nine annual observations for the exclusive-earmark aggregate. Source-absent fund observations are retained as rows and plotted as gaps; explicit source zeros are retained at zero.

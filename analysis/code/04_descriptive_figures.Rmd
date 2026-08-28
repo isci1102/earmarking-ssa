@@ -1,0 +1,2882 @@
+---
+title: "SSA revenue instruments: descriptive figures"
+author: "IMF research project"
+date: "`r format(Sys.Date(), '%Y-%m-%d')`"
+params:
+  analysis_variant: "full"
+output:
+  html_document:
+    toc: true
+    toc_depth: 2
+    df_print: paged
+---
+
+This notebook describes the country coverage, statutory allocation linkages, sectors bearing the charge, and statutory destination functions in the prepared analytical data. The database is a **de jure** legal inventory; it does not measure collections, transfers, disbursements, or expenditure execution. Every figure uses only the six declared inputs, and every exported CSV contains the exact analytical data displayed in its matching PNG.
+
+```{r setup, include=FALSE}
+if (.Platform$OS.type == "windows") {
+  active_utf8_locale <- Sys.setlocale(
+    "LC_CTYPE",
+    "English_United States.utf8"
+  )
+  if (identical(active_utf8_locale, "")) {
+    stop("A UTF-8 locale is required to preserve accented legal text.")
+  }
+}
+
+input_path <- knitr::current_input(dir = TRUE)
+project_root <- normalizePath(
+  file.path(dirname(input_path), "..", ".."),
+  winslash = "/",
+  mustWork = TRUE
+)
+
+knitr::opts_knit$set(root.dir = project_root)
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+
+library(dplyr)
+library(tidyr)
+library(purrr)
+library(readr)
+library(stringr)
+library(tibble)
+library(ggplot2)
+library(scales)
+library(knitr)
+
+options(stringsAsFactors = FALSE, scipen = 999)
+
+analysis_variant <- params$analysis_variant
+allowed_analysis_variants <- c("full", "partial_exclusive")
+if (!analysis_variant %in% allowed_analysis_variants) {
+  stop(
+    "Unknown analysis_variant: ", analysis_variant,
+    ". Expected one of: ", paste(allowed_analysis_variants, collapse = "; ")
+  )
+}
+is_partial_exclusive <- identical(analysis_variant, "partial_exclusive")
+partial_exclusive_statuses <- c("partial_earmark", "exclusive_earmark")
+
+figure_dir <- file.path(project_root, "analysis", "figures")
+table_dir <- file.path(project_root, "analysis", "tables")
+if (is_partial_exclusive) {
+  figure_dir <- file.path(figure_dir, "partial_exclusive")
+  table_dir <- file.path(table_dir, "partial_exclusive")
+}
+
+input_paths <- c(
+  SSA_CENSUS = file.path(
+    project_root, "data", "derived", "SSA_CENSUS.csv"
+  ),
+  SSA_EARMARK_ALLOCATIONS = file.path(
+    project_root, "data", "derived", "SSA_EARMARK_ALLOCATIONS.csv"
+  ),
+  SSA_EARMARK_ALLOCATIONS_EXPANDED = file.path(
+    project_root,
+    "data",
+    "derived",
+    "SSA_EARMARK_ALLOCATIONS_EXPANDED.csv"
+  ),
+  country_corpus_coverage = file.path(
+    project_root,
+    "analysis",
+    "tables",
+    "01_country_corpus_coverage.csv"
+  ),
+  country_summary = file.path(
+    table_dir,
+    "02_country_summary.csv"
+  ),
+  COFOG_GFSM2014_mapping = file.path(
+    project_root, "data", "COFOG_GFSM2014_mapping.csv"
+  )
+)
+
+dir.create(figure_dir, recursive = TRUE, showWarnings = FALSE)
+dir.create(table_dir, recursive = TRUE, showWarnings = FALSE)
+
+# Publication palette. Dark blue is the default for one-series figures.
+main_blue <- "#1F4E79"
+light_blue_grey <- "#C8D4DE"
+imf_neutral <- "#BCC6CE"
+matrix_blue <- "#17365D"
+
+# Shared light-to-dark heatmap palette. Hue changes from grey-blue through
+# teal, blue, and green before reaching navy so low, middle, and high shares
+# remain visually distinct.
+heatmap_share_colours <- c(
+  "#F3F6F8", # very light grey-blue
+  "#B9DDD8", # light teal
+  "#6FA8C4", # medium blue
+  "#68A36F", # medium green
+  "#17365D"  # dark navy
+)
+heatmap_share_values <- rescale(c(0, 0.05, 0.15, 0.35, 1))
+
+# Stepped within-source-sector shares for the source-to-destination matrix.
+source_share_colours <- c(
+  "0%" = "#FFFFFF",
+  ">0–5%" = "#E8EEF5",
+  "5–10%" = "#C3D2E3",
+  "10–20%" = "#88A8C5",
+  "20–40%" = "#4F789E",
+  ">40%" = "#17365D"
+)
+
+# The first five hues are assigned to the five retained substantive divisions
+# in pooled-rank order. The sixth hue remains available if the display is
+# expanded later; special categories always use their fixed named colours.
+supplementary_substantive_colours <- c(
+  "#4F83B5", # medium blue
+  "#4F9E9A", # teal
+  "#9A7CAF", # soft purple
+  "#7FA66A", # green
+  "#C2A24A", # mustard
+  "#C98673"  # reserved soft coral
+)
+supplementary_special_colours <- c(
+  "Other" = "#8E969E",
+  "general_budget" = "#A8BAC6",
+  "local_budget" = "#C8D0D6",
+  "unallocated" = "#E7EAED"
+)
+
+# Institutional-routing categories. General budget and missing values retain
+# the same neutral roles used elsewhere; recipient categories use distinct,
+# moderately bright publication colours.
+beneficiary_colours <- c(
+  "agency" = "#4F9E9A",
+  "collectivite_territoriale" = "#7FA66A",
+  "fond" = "#B98B5D",
+  "fund" = "#4F83B5",
+  "general_budget" = "#A8BAC6",
+  "international_agency" = "#D18B73",
+  "ministry" = "#7587B3",
+  "program" = "#9A7CAF",
+  "public_employees" = "#C9859D",
+  "sector" = "#C2A24A",
+  "supranational" = "#4E8796",
+  "Missing" = "#E7EAED"
+)
+
+theme_imf <- theme_minimal(base_size = 11) +
+  theme(
+    plot.title.position = "plot",
+    plot.title = element_text(face = "bold", colour = "#222222", size = 14),
+    plot.subtitle = element_text(colour = "#4D4D4D", margin = margin(b = 9)),
+    plot.caption = element_text(colour = "#666666", hjust = 0, size = 8.5),
+    axis.title = element_text(face = "bold", colour = "#333333"),
+    axis.text = element_text(colour = "#333333"),
+    panel.grid.minor = element_blank(),
+    panel.grid.major.y = element_blank(),
+    legend.title = element_text(face = "bold"),
+    plot.margin = margin(10, 14, 10, 10)
+  )
+
+write_plot_csv <- function(data, stem) {
+  write_csv(
+    data,
+    file.path(table_dir, paste0(stem, ".csv")),
+    na = ""
+  )
+}
+
+save_plot <- function(plot_object, stem, width, height) {
+  ggsave(
+    filename = file.path(figure_dir, paste0(stem, ".png")),
+    plot = plot_object,
+    width = width,
+    height = height,
+    units = "in",
+    dpi = 300,
+    bg = "white"
+  )
+}
+
+strict_numeric <- function(values, field, dataset) {
+  character_values <- str_trim(as.character(values))
+  parsed_values <- suppressWarnings(parse_double(character_values, na = c("", "NA")))
+  invalid <- !is.na(character_values) & character_values != "" &
+    is.na(parsed_values)
+  if (any(invalid)) {
+    stop(
+      dataset, "$", field,
+      " contains non-numeric values: ",
+      paste(unique(character_values[invalid]), collapse = "; ")
+    )
+  }
+  parsed_values
+}
+
+make_base_sector_label <- function(values) {
+  values <- if_else(is.na(values) | str_trim(values) == "", "Missing", values)
+  map_chr(values, function(value) {
+    if (value == "Missing") {
+      return("Missing")
+    }
+    if (str_detect(value, "^[A-Z]_")) {
+      letter <- str_sub(value, 1, 1)
+      description <- str_sub(value, 3) %>%
+        str_replace_all("_", " ") %>%
+        str_to_sentence()
+      return(paste0(letter, " - ", description))
+    }
+    value %>% str_replace_all("_", " ") %>% str_to_sentence()
+  })
+}
+
+```
+
+# 1. Load and validate the declared inputs
+
+All columns are read as text first. Numeric fields used in plots are converted only after a strict check that every non-missing value is numeric.
+
+```{r load-and-validate}
+missing_inputs <- names(input_paths)[!file.exists(input_paths)]
+if (length(missing_inputs) > 0L) {
+  stop("Missing required input files: ", paste(missing_inputs, collapse = "; "))
+}
+
+SSA_CENSUS <- read_csv(
+  input_paths[["SSA_CENSUS"]],
+  col_types = cols(.default = col_character()),
+  show_col_types = FALSE,
+  progress = FALSE
+)
+SSA_EARMARK_ALLOCATIONS <- read_csv(
+  input_paths[["SSA_EARMARK_ALLOCATIONS"]],
+  col_types = cols(.default = col_character()),
+  show_col_types = FALSE,
+  progress = FALSE
+)
+SSA_EARMARK_ALLOCATIONS_EXPANDED <- read_csv(
+  input_paths[["SSA_EARMARK_ALLOCATIONS_EXPANDED"]],
+  col_types = cols(.default = col_character()),
+  show_col_types = FALSE,
+  progress = FALSE
+)
+country_corpus_coverage <- read_csv(
+  input_paths[["country_corpus_coverage"]],
+  col_types = cols(.default = col_character()),
+  show_col_types = FALSE,
+  progress = FALSE
+)
+country_summary <- read_csv(
+  input_paths[["country_summary"]],
+  col_types = cols(.default = col_character()),
+  show_col_types = FALSE,
+  progress = FALSE
+)
+COFOG_GFSM2014_mapping <- read_delim(
+  input_paths[["COFOG_GFSM2014_mapping"]],
+  delim = ";",
+  col_types = cols(.default = col_character()),
+  trim_ws = TRUE,
+  show_col_types = FALSE,
+  progress = FALSE
+)
+
+required_columns <- list(
+  SSA_CENSUS = c(
+    "country", "instrument_id", "base_sector", "in_force", "is_penalty"
+  ),
+  SSA_EARMARK_ALLOCATIONS = c(
+    "country", "pair_id", "instrument_id", "share_level",
+    "beneficiary_type", "destination_function",
+    "destination_function_detail",
+    if (is_partial_exclusive) "earmark_status"
+  ),
+  SSA_EARMARK_ALLOCATIONS_EXPANDED = c(
+    "country", "instrument_id", "pair_id", "census_instrument_id",
+    "share_level", if (is_partial_exclusive) "earmark_status"
+  ),
+  country_corpus_coverage = c(
+    "dataset", "country", "document_years", "corpus_type"
+  ),
+  country_summary = c(
+    "country", "D_all_census_instruments", "D_census_instruments",
+    "E_all_linked_census_instruments", "E_linked_census_instruments",
+    "A_allocation_source_groups", "P_allocation_pairs",
+    "allocation_incidence_E_D",
+    "allocation_scope", "census_scope"
+  ),
+  COFOG_GFSM2014_mapping = c(
+    "cofog_code", "level", "cofog_name", "division_code", "division_name"
+  )
+)
+
+input_objects <- list(
+  SSA_CENSUS = SSA_CENSUS,
+  SSA_EARMARK_ALLOCATIONS = SSA_EARMARK_ALLOCATIONS,
+  SSA_EARMARK_ALLOCATIONS_EXPANDED = SSA_EARMARK_ALLOCATIONS_EXPANDED,
+  country_corpus_coverage = country_corpus_coverage,
+  country_summary = country_summary,
+  COFOG_GFSM2014_mapping = COFOG_GFSM2014_mapping
+)
+
+schema_missing <- imap_dfr(required_columns, function(fields, dataset_name) {
+  tibble(
+    dataset = dataset_name,
+    missing_column = setdiff(fields, names(input_objects[[dataset_name]]))
+  )
+})
+if (nrow(schema_missing) > 0L) {
+  stop(
+    "Required columns are missing: ",
+    paste(
+      paste(schema_missing$dataset, schema_missing$missing_column, sep = "$"),
+      collapse = "; "
+    )
+  )
+}
+
+SSA_EARMARK_ALLOCATIONS_UNFILTERED <- SSA_EARMARK_ALLOCATIONS
+SSA_EARMARK_ALLOCATIONS_EXPANDED_UNFILTERED <-
+  SSA_EARMARK_ALLOCATIONS_EXPANDED
+
+if (is_partial_exclusive) {
+  allowed_earmark_statuses <- c(
+    "assigned_unrestricted", "cost_recovery_only",
+    "partial_earmark", "exclusive_earmark"
+  )
+  allocation_status_problems <- bind_rows(
+    SSA_EARMARK_ALLOCATIONS_UNFILTERED %>%
+      filter(
+        is.na(earmark_status) | str_trim(earmark_status) == "" |
+          !earmark_status %in% allowed_earmark_statuses
+      ) %>%
+      transmute(dataset = "SSA_EARMARK_ALLOCATIONS", country, instrument_id,
+                earmark_status),
+    SSA_EARMARK_ALLOCATIONS_EXPANDED_UNFILTERED %>%
+      filter(
+        is.na(earmark_status) | str_trim(earmark_status) == "" |
+          !earmark_status %in% allowed_earmark_statuses
+      ) %>%
+      transmute(
+        dataset = "SSA_EARMARK_ALLOCATIONS_EXPANDED",
+        country, instrument_id, earmark_status
+      )
+  )
+  allocation_status_map <- SSA_EARMARK_ALLOCATIONS_UNFILTERED %>%
+    distinct(country, instrument_id, earmark_status)
+  expanded_status_map <- SSA_EARMARK_ALLOCATIONS_EXPANDED_UNFILTERED %>%
+    distinct(country, instrument_id, earmark_status)
+  status_key_conflicts <- bind_rows(
+    allocation_status_map %>%
+      count(country, instrument_id, name = "n_statuses") %>%
+      filter(n_statuses != 1L) %>%
+      mutate(dataset = "SSA_EARMARK_ALLOCATIONS", .before = 1),
+    expanded_status_map %>%
+      count(country, instrument_id, name = "n_statuses") %>%
+      filter(n_statuses != 1L) %>%
+      mutate(dataset = "SSA_EARMARK_ALLOCATIONS_EXPANDED", .before = 1)
+  )
+  expanded_status_mismatches <- expanded_status_map %>%
+    anti_join(
+      allocation_status_map,
+      by = c("country", "instrument_id", "earmark_status")
+    )
+
+  if (nrow(allocation_status_problems) > 0L ||
+      nrow(status_key_conflicts) > 0L ||
+      nrow(expanded_status_mismatches) > 0L) {
+    print(allocation_status_problems)
+    print(status_key_conflicts)
+    print(expanded_status_mismatches)
+    stop("Allocation earmark_status validation failed before filtering.")
+  }
+
+  SSA_EARMARK_ALLOCATIONS <- SSA_EARMARK_ALLOCATIONS_UNFILTERED %>%
+    filter(earmark_status %in% partial_exclusive_statuses)
+  SSA_EARMARK_ALLOCATIONS_EXPANDED <-
+    SSA_EARMARK_ALLOCATIONS_EXPANDED_UNFILTERED %>%
+    filter(earmark_status %in% partial_exclusive_statuses)
+}
+
+analysis_filter_audit <- tribble(
+  ~dataset, ~measure, ~before, ~after,
+  "SSA_EARMARK_ALLOCATIONS", "rows",
+  nrow(SSA_EARMARK_ALLOCATIONS_UNFILTERED),
+  nrow(SSA_EARMARK_ALLOCATIONS),
+  "SSA_EARMARK_ALLOCATIONS", "distinct country + pair_id",
+  nrow(distinct(
+    SSA_EARMARK_ALLOCATIONS_UNFILTERED, country, pair_id
+  )),
+  nrow(distinct(SSA_EARMARK_ALLOCATIONS, country, pair_id)),
+  "SSA_EARMARK_ALLOCATIONS_EXPANDED", "expanded links",
+  nrow(SSA_EARMARK_ALLOCATIONS_EXPANDED_UNFILTERED),
+  nrow(SSA_EARMARK_ALLOCATIONS_EXPANDED)
+)
+filtered_status_distribution <- SSA_EARMARK_ALLOCATIONS %>%
+  distinct(country, instrument_id, earmark_status) %>%
+  count(earmark_status, name = "n_allocation_source_instruments") %>%
+  arrange(earmark_status)
+filtered_countries <- SSA_EARMARK_ALLOCATIONS %>%
+  distinct(country) %>%
+  arrange(country)
+
+if (is_partial_exclusive &&
+    (!all(SSA_EARMARK_ALLOCATIONS$earmark_status %in%
+          partial_exclusive_statuses) ||
+     !all(SSA_EARMARK_ALLOCATIONS_EXPANDED$earmark_status %in%
+          partial_exclusive_statuses))) {
+  stop("A non-partial/non-exclusive status remains after filtering.")
+}
+
+if (any(is.na(SSA_EARMARK_ALLOCATIONS$country)) ||
+    any(is.na(SSA_EARMARK_ALLOCATIONS$pair_id)) ||
+    any(str_trim(SSA_EARMARK_ALLOCATIONS$pair_id) == "")) {
+  stop("Allocation country or pair_id is missing; allocation-unit plots cannot proceed.")
+}
+if (any(is.na(SSA_EARMARK_ALLOCATIONS_EXPANDED$census_instrument_id)) ||
+    any(str_trim(SSA_EARMARK_ALLOCATIONS_EXPANDED$census_instrument_id) == "")) {
+  stop("Expanded census_instrument_id is missing; linkage plots cannot proceed.")
+}
+
+allocation_share_levels <- sort(unique(str_trim(
+  SSA_EARMARK_ALLOCATIONS$share_level
+)))
+expanded_share_levels <- sort(unique(str_trim(
+  SSA_EARMARK_ALLOCATIONS_EXPANDED$share_level
+)))
+if (!identical(allocation_share_levels, "1") ||
+    !identical(expanded_share_levels, "1")) {
+  stop("Allocation inputs contain a share_level other than 1.")
+}
+if (any(str_trim(SSA_CENSUS$in_force) != "1") ||
+    any(str_trim(SSA_CENSUS$is_penalty) != "0")) {
+  stop("SSA_CENSUS does not have the declared in_force == 1, is_penalty == 0 scope.")
+}
+
+census_keys <- SSA_CENSUS %>%
+  transmute(country, census_instrument_id = instrument_id) %>%
+  distinct()
+if (nrow(census_keys) != nrow(SSA_CENSUS)) {
+  stop("Census country + instrument_id is not unique.")
+}
+expanded_keys <- SSA_EARMARK_ALLOCATIONS_EXPANDED %>%
+  distinct(country, pair_id, census_instrument_id)
+if (nrow(expanded_keys) != nrow(SSA_EARMARK_ALLOCATIONS_EXPANDED)) {
+  stop("Expanded country + pair_id + census_instrument_id is not unique.")
+}
+
+valid_expanded <- SSA_EARMARK_ALLOCATIONS_EXPANDED %>%
+  semi_join(census_keys, by = c("country", "census_instrument_id"))
+scope_excluded_expanded <- SSA_EARMARK_ALLOCATIONS_EXPANDED %>%
+  anti_join(census_keys, by = c("country", "census_instrument_id"))
+
+cross_country_links <- scope_excluded_expanded %>%
+  semi_join(
+    census_keys %>% distinct(census_instrument_id),
+    by = "census_instrument_id"
+  )
+if (nrow(cross_country_links) > 0L) {
+  stop("Expanded links have cross-country-only Census matches.")
+}
+
+country_summary_numeric <- country_summary %>%
+  mutate(
+    D_all_census_instruments = strict_numeric(
+      D_all_census_instruments,
+      "D_all_census_instruments",
+      "country_summary"
+    ),
+    D_census_instruments = strict_numeric(
+      D_census_instruments,
+      "D_census_instruments",
+      "country_summary"
+    ),
+    E_all_linked_census_instruments = strict_numeric(
+      E_all_linked_census_instruments,
+      "E_all_linked_census_instruments",
+      "country_summary"
+    ),
+    E_linked_census_instruments = strict_numeric(
+      E_linked_census_instruments,
+      "E_linked_census_instruments",
+      "country_summary"
+    ),
+    A_allocation_source_groups = strict_numeric(
+      A_allocation_source_groups,
+      "A_allocation_source_groups",
+      "country_summary"
+    ),
+    P_allocation_pairs = strict_numeric(
+      P_allocation_pairs,
+      "P_allocation_pairs",
+      "country_summary"
+    ),
+    allocation_incidence_E_D = strict_numeric(
+      allocation_incidence_E_D,
+      "allocation_incidence_E_D",
+      "country_summary"
+    )
+  )
+
+observed_scope_exclusions <- scope_excluded_expanded %>%
+  distinct(country, census_instrument_id) %>%
+  count(country, name = "observed_scope_excluded_instruments")
+scope_reconciliation <- country_summary_numeric %>%
+  transmute(
+    country,
+    expected_scope_excluded_instruments =
+      E_all_linked_census_instruments - E_linked_census_instruments
+  ) %>%
+  left_join(observed_scope_exclusions, by = "country") %>%
+  mutate(observed_scope_excluded_instruments = replace_na(
+    observed_scope_excluded_instruments, 0L
+  ))
+if (any(
+  scope_reconciliation$expected_scope_excluded_instruments !=
+    scope_reconciliation$observed_scope_excluded_instruments
+)) {
+  stop(
+    "Expanded links absent from analytical Census do not reconcile to the ",
+    "declared all-linked versus valid-linked scope gap."
+  )
+}
+
+country_sets <- list(
+  Census = sort(unique(SSA_CENSUS$country)),
+  Allocation = sort(unique(SSA_EARMARK_ALLOCATIONS$country)),
+  Expanded = sort(unique(SSA_EARMARK_ALLOCATIONS_EXPANDED$country)),
+  Coverage = sort(unique(country_corpus_coverage$country)),
+  Summary = sort(unique(country_summary$country))
+)
+if (is_partial_exclusive) {
+  if (!identical(country_sets$Allocation, country_sets$Expanded) ||
+      !all(country_sets$Allocation %in% country_sets$Census) ||
+      !identical(country_sets$Coverage, country_sets$Census) ||
+      !identical(country_sets$Summary, country_sets$Census)) {
+    stop(
+      "Filtered allocation countries are not a common subset of the full ",
+      "Census, coverage, and country-summary universe."
+    )
+  }
+  inventory_country_universe <- tibble(country = country_sets$Census)
+  country_universe <- tibble(country = country_sets$Allocation)
+} else {
+  if (!all(map_lgl(country_sets[-1], identical, country_sets[[1]]))) {
+    stop("The six inputs do not share the same analytical country universe.")
+  }
+  inventory_country_universe <- tibble(country = country_sets[[1]])
+  country_universe <- tibble(country = country_sets[[1]])
+}
+
+mapping_duplicates <- COFOG_GFSM2014_mapping %>%
+  count(cofog_code) %>%
+  filter(n > 1L)
+if (nrow(mapping_duplicates) > 0L) {
+  stop("COFOG mapping codes are not unique.")
+}
+
+cat(
+  "Analysis variant:", analysis_variant, "\n",
+  "Allocation rows before / after status filter:",
+  nrow(SSA_EARMARK_ALLOCATIONS_UNFILTERED), "/",
+  nrow(SSA_EARMARK_ALLOCATIONS), "\n",
+  "Distinct allocation pairs before / after status filter:",
+  nrow(distinct(
+    SSA_EARMARK_ALLOCATIONS_UNFILTERED, country, pair_id
+  )), "/", nrow(distinct(SSA_EARMARK_ALLOCATIONS, country, pair_id)), "\n",
+  "Expanded links before / after status filter:",
+  nrow(SSA_EARMARK_ALLOCATIONS_EXPANDED_UNFILTERED), "/",
+  nrow(SSA_EARMARK_ALLOCATIONS_EXPANDED), "\n",
+  "Countries remaining:",
+  paste(filtered_countries$country, collapse = ", "), "\n",
+  "Only partial_earmark and exclusive_earmark present:",
+  all(SSA_EARMARK_ALLOCATIONS$earmark_status %in%
+      partial_exclusive_statuses) &&
+    all(SSA_EARMARK_ALLOCATIONS_EXPANDED$earmark_status %in%
+        partial_exclusive_statuses), "\n",
+  "Validated Census-coverage countries:",
+  nrow(inventory_country_universe), "\n",
+  "Validated filtered-allocation countries:", nrow(country_universe), "\n",
+  "Allocation rows / distinct country + pair_id:",
+  nrow(SSA_EARMARK_ALLOCATIONS), "/",
+  nrow(distinct(SSA_EARMARK_ALLOCATIONS, country, pair_id)), "\n",
+  "Expanded rows matching analytical Census within country:",
+  nrow(valid_expanded), "of", nrow(SSA_EARMARK_ALLOCATIONS_EXPANDED), "\n",
+  "Expected analytical-scope exclusions:",
+  nrow(scope_excluded_expanded), "rows /",
+  n_distinct(scope_excluded_expanded$census_instrument_id,
+             scope_excluded_expanded$country),
+  "country-specific Census instruments\n",
+  "Cross-country-only matches:", nrow(cross_country_links), "\n"
+)
+```
+
+## Allocation-status filter audit
+
+```{r display-analysis-filter-audit}
+knitr::kable(analysis_filter_audit, row.names = FALSE)
+knitr::kable(filtered_status_distribution, row.names = FALSE)
+```
+
+The expanded rows absent from `SSA_CENSUS` reconcile exactly, country by country, to the gap between all linked instruments and current non-penalty linked instruments recorded in `02_country_summary.csv`. They are therefore expected analytical-scope exclusions, not broken or cross-country links. All linkage-based figures below use `valid_expanded` only.
+
+# 2. Sample coverage
+
+The sample-coverage dataset uses the Census corpus row for each country. `latest_document_year` is the largest four-digit year listed in `document_years`; the original year string is retained unchanged.
+
+```{r prepare-sample-coverage}
+africa_lookup <- tribble(
+  ~country, ~country_name, ~map_region,
+  "DZA", "Algeria", "Algeria",
+  "AGO", "Angola", "Angola",
+  "BEN", "Benin", "Benin",
+  "BWA", "Botswana", "Botswana",
+  "BFA", "Burkina Faso", "Burkina Faso",
+  "BDI", "Burundi", "Burundi",
+  "CPV", "Cabo Verde", "Cape Verde",
+  "CMR", "Cameroon", "Cameroon",
+  "CAF", "Central African Republic", "Central African Republic",
+  "TCD", "Chad", "Chad",
+  "COM", "Comoros", "Comoros",
+  "COD", "Democratic Republic of the Congo", "Democratic Republic of the Congo",
+  "COG", "Republic of the Congo", "Republic of Congo",
+  "CIV", "Côte d'Ivoire", "Ivory Coast",
+  "DJI", "Djibouti", "Djibouti",
+  "EGY", "Egypt", "Egypt",
+  "GNQ", "Equatorial Guinea", "Equatorial Guinea",
+  "ERI", "Eritrea", "Eritrea",
+  "SWZ", "Eswatini", "Swaziland",
+  "ETH", "Ethiopia", "Ethiopia",
+  "GAB", "Gabon", "Gabon",
+  "GMB", "The Gambia", "Gambia",
+  "GHA", "Ghana", "Ghana",
+  "GIN", "Guinea", "Guinea",
+  "GNB", "Guinea-Bissau", "Guinea-Bissau",
+  "KEN", "Kenya", "Kenya",
+  "LSO", "Lesotho", "Lesotho",
+  "LBR", "Liberia", "Liberia",
+  "LBY", "Libya", "Libya",
+  "MDG", "Madagascar", "Madagascar",
+  "MWI", "Malawi", "Malawi",
+  "MLI", "Mali", "Mali",
+  "MRT", "Mauritania", "Mauritania",
+  "MUS", "Mauritius", "Mauritius",
+  "MAR", "Morocco", "Morocco",
+  "MOZ", "Mozambique", "Mozambique",
+  "NAM", "Namibia", "Namibia",
+  "NER", "Niger", "Niger",
+  "NGA", "Nigeria", "Nigeria",
+  "RWA", "Rwanda", "Rwanda",
+  "STP", "São Tomé and Príncipe", "Sao Tome and Principe",
+  "SEN", "Senegal", "Senegal",
+  "SYC", "Seychelles", "Seychelles",
+  "SLE", "Sierra Leone", "Sierra Leone",
+  "SOM", "Somalia", "Somalia",
+  "ZAF", "South Africa", "South Africa",
+  "SSD", "South Sudan", "South Sudan",
+  "SDN", "Sudan", "Sudan",
+  "TZA", "Tanzania", "Tanzania",
+  "TGO", "Togo", "Togo",
+  "TUN", "Tunisia", "Tunisia",
+  "UGA", "Uganda", "Uganda",
+  "ESH", "Western Sahara", "Western Sahara",
+  "ZMB", "Zambia", "Zambia",
+  "ZWE", "Zimbabwe", "Zimbabwe"
+)
+
+census_coverage <- country_corpus_coverage %>%
+  filter(str_to_lower(str_trim(dataset)) == "census") %>%
+  semi_join(inventory_country_universe, by = "country")
+if (nrow(census_coverage) != n_distinct(census_coverage$country) ||
+    nrow(census_coverage) != nrow(inventory_country_universe)) {
+  stop("Census corpus coverage is not one complete row per analytical country.")
+}
+
+extract_latest_year <- function(year_string) {
+  years <- str_extract_all(coalesce(year_string, ""), "[0-9]{4}")[[1]]
+  if (length(years) == 0L) {
+    return(NA_real_)
+  }
+  max(as.numeric(years))
+}
+
+sample_coverage <- census_coverage %>%
+  transmute(
+    country,
+    document_years,
+    latest_document_year = map_dbl(document_years, extract_latest_year),
+    corpus_type
+  ) %>%
+  left_join(
+    country_summary_numeric %>%
+      select(
+        country,
+        D_census_instruments,
+        A_allocation_source_groups,
+        allocation_incidence_E_D
+      ),
+    by = "country"
+  ) %>%
+  left_join(
+    africa_lookup %>% select(country, country_name),
+    by = "country"
+  ) %>%
+  select(
+    country,
+    country_name,
+    document_years,
+    latest_document_year,
+    corpus_type,
+    D_census_instruments,
+    A_allocation_source_groups,
+    allocation_incidence_E_D
+  )
+
+if (any(is.na(sample_coverage$country_name)) ||
+    any(is.na(sample_coverage$latest_document_year))) {
+  stop("A sample country lacks an Africa-map name or a parseable Census year.")
+}
+```
+
+## 2.1 Africa inventory map
+
+```{r africa-inventory-map, fig.width=10, fig.height=8}
+world_map <- map_data("world")
+missing_map_regions <- setdiff(africa_lookup$map_region, unique(world_map$region))
+if (length(missing_map_regions) > 0L) {
+  stop(
+    "Africa map regions not found in the installed map geometry: ",
+    paste(missing_map_regions, collapse = "; ")
+  )
+}
+
+map_csv <- africa_lookup %>%
+  left_join(sample_coverage, by = c("country", "country_name")) %>%
+  mutate(
+    inventory_status = if_else(
+      country %in% sample_coverage$country,
+      "In inventory",
+      "Other African country"
+    )
+  ) %>%
+  select(
+    country,
+    country_name,
+    inventory_status,
+    document_years,
+    latest_document_year,
+    corpus_type,
+    D_census_instruments,
+    A_allocation_source_groups,
+    allocation_incidence_E_D
+  ) %>%
+  arrange(desc(inventory_status), country_name)
+
+if (sum(map_csv$inventory_status == "In inventory") !=
+    nrow(sample_coverage)) {
+  stop("Not every analytical country maps exactly once to the Africa inventory map.")
+}
+
+africa_polygons <- world_map %>%
+  inner_join(
+    africa_lookup,
+    by = c("region" = "map_region")
+  ) %>%
+  left_join(
+    map_csv %>% select(country, inventory_status),
+    by = "country"
+  )
+
+map_plot <- ggplot(
+  africa_polygons,
+  aes(x = long, y = lat, group = group, fill = inventory_status)
+) +
+  geom_polygon(colour = "white", linewidth = 0.25) +
+  coord_quickmap(xlim = c(-26, 56), ylim = c(-36, 38), expand = FALSE) +
+  scale_fill_manual(
+    values = c(
+      "In inventory" = main_blue,
+      "Other African country" = light_blue_grey
+    ),
+    breaks = c("In inventory", "Other African country")
+  ) +
+  labs(
+    title = "Geographic coverage of the statutory earmark inventory",
+    subtitle = "Countries included in the legal review are shown in dark blue",
+    fill = NULL,
+    caption = paste0(
+      "Note: The map describes the legal inventory reviewed for this study; ",
+      "it does not measure collections, transfers, or expenditure execution."
+    )
+  ) +
+  theme_void(base_size = 11) +
+  theme(
+    plot.title.position = "plot",
+    plot.title = element_text(face = "bold", colour = "#222222", size = 14),
+    plot.subtitle = element_text(colour = "#4D4D4D", margin = margin(b = 8)),
+    plot.caption = element_text(colour = "#666666", hjust = 0, size = 8.5),
+    legend.position = "bottom",
+    legend.text = element_text(colour = "#333333"),
+    plot.margin = margin(10, 12, 10, 12)
+  )
+
+write_plot_csv(map_csv, "04_africa_inventory_map")
+save_plot(map_plot, "04_africa_inventory_map", width = 10, height = 8)
+print(map_plot)
+```
+
+## 2.2 Latest legal-source year
+
+```{r coverage-timeline, fig.width=10, fig.height=7.5}
+timeline_csv <- sample_coverage %>%
+  arrange(latest_document_year, country_name)
+
+timeline_plot_data <- timeline_csv %>%
+  mutate(
+    country_name = factor(country_name, levels = timeline_csv$country_name),
+    source_group_label = format(A_allocation_source_groups, trim = TRUE)
+  )
+timeline_origin <- min(timeline_plot_data$latest_document_year) - 0.35
+
+timeline_plot <- ggplot(
+  timeline_plot_data,
+  aes(x = latest_document_year, y = country_name)
+) +
+  geom_segment(
+    aes(x = timeline_origin, xend = latest_document_year, yend = country_name),
+    linewidth = 0.45,
+    colour = imf_neutral
+  ) +
+  geom_point(size = 4.5, colour = main_blue) +
+  geom_text(
+    aes(label = source_group_label),
+    nudge_x = 0.11,
+    hjust = 0,
+    size = 3.1,
+    colour = "#333333"
+  ) +
+  scale_x_continuous(
+    breaks = seq(
+      floor(min(timeline_plot_data$latest_document_year)),
+      ceiling(max(timeline_plot_data$latest_document_year)),
+      by = 1
+    ),
+    expand = expansion(mult = c(0.01, 0.09))
+  ) +
+  labs(
+    title = "Tax-register year by country",
+    subtitle = "Point labels show the number of statutory allocation instruments",
+    x = "Tax-register year",
+    y = NULL,
+    caption = paste0(
+      "Note: The year is the latest legal-source year included in each country's ",
+      "tax register; it does not indicate the timing of revenue collections."
+    )
+  ) +
+  theme_imf
+
+write_plot_csv(timeline_csv, "04_coverage_timeline")
+save_plot(timeline_plot, "04_coverage_timeline", width = 10, height = 7.5)
+print(timeline_plot)
+```
+
+# 3. Allocation incidence
+
+The plotted ratio is the share of current, non-penalty Census instruments linked to at least one broad level-1 statutory allocation. It is not a strict functional-earmark measure.
+
+```{r earmark-incidence, fig.width=10, fig.height=7.5}
+incidence_csv <- sample_coverage %>%
+  select(country, country_name, allocation_incidence_E_D) %>%
+  arrange(is.na(allocation_incidence_E_D), allocation_incidence_E_D, country_name)
+
+incidence_plot_data <- incidence_csv %>%
+  filter(!is.na(allocation_incidence_E_D)) %>%
+  mutate(
+    country_name = factor(country_name, levels = country_name),
+    value_label = percent(allocation_incidence_E_D, accuracy = 0.1)
+  )
+
+incidence_plot <- ggplot(
+  incidence_plot_data,
+  aes(x = allocation_incidence_E_D, y = country_name)
+) +
+  geom_col(width = 0.62, fill = main_blue) +
+  geom_text(
+    aes(label = value_label),
+    hjust = -0.12,
+    size = 3,
+    colour = "#333333"
+  ) +
+  scale_x_continuous(
+    labels = label_percent(accuracy = 1),
+    expand = expansion(mult = c(0, 0.13))
+  ) +
+  labs(
+    title = "Prevalence of statutory revenue allocation",
+    subtitle = "Share of current non-penalty revenue instruments with a statutory allocation",
+    x = "Share of revenue instruments with a statutory allocation",
+    y = NULL,
+    caption = paste0(
+      "Note: The measure describes legal allocation provisions, not actual ",
+      "collections, transfers, or expenditure execution."
+    )
+  ) +
+  theme_imf
+
+write_plot_csv(incidence_csv, "04_earmark_incidence")
+save_plot(incidence_plot, "04_earmark_incidence", width = 10, height = 7.5)
+print(incidence_plot)
+```
+
+# 4. Sector bearing the charge
+
+The unit is one distinct valid linked Census instrument: `country + census_instrument_id + base_sector`. Missing Census sector classifications are retained explicitly as `Missing`.
+
+```{r prepare-base-sector}
+linked_census_instruments <- valid_expanded %>%
+  distinct(country, census_instrument_id) %>%
+  inner_join(
+    SSA_CENSUS %>%
+      transmute(
+        country,
+        census_instrument_id = instrument_id,
+        base_sector
+      ),
+    by = c("country", "census_instrument_id")
+  ) %>%
+  mutate(
+    base_sector = if_else(
+      is.na(base_sector) | str_trim(base_sector) == "",
+      "Missing",
+      base_sector
+    ),
+    base_sector_label = make_base_sector_label(base_sector)
+  ) %>%
+  distinct(country, census_instrument_id, base_sector, base_sector_label)
+
+if (nrow(linked_census_instruments) !=
+    sum(country_summary_numeric$E_linked_census_instruments)) {
+  stop("Valid linked Census-instrument count does not reconcile to country summary E.")
+}
+
+base_sector_pooled_csv <- linked_census_instruments %>%
+  count(base_sector, base_sector_label, name = "n_linked_census_instruments") %>%
+  arrange(desc(n_linked_census_instruments), base_sector)
+
+linked_instrument_totals <- linked_census_instruments %>%
+  count(country, name = "country_total_linked_census_instruments")
+base_sector_country_grid <- crossing(
+  country = country_universe$country,
+  linked_census_instruments %>%
+    distinct(base_sector, base_sector_label)
+) %>%
+  left_join(
+    linked_census_instruments %>%
+      count(country, base_sector, base_sector_label,
+            name = "n_linked_census_instruments"),
+    by = c("country", "base_sector", "base_sector_label")
+  ) %>%
+  mutate(n_linked_census_instruments = replace_na(
+    n_linked_census_instruments, 0L
+  )) %>%
+  left_join(linked_instrument_totals, by = "country") %>%
+  mutate(
+    within_country_share = n_linked_census_instruments /
+      country_total_linked_census_instruments
+  )
+
+if (any(is.na(base_sector_country_grid$within_country_share))) {
+  stop("A sample country has no valid linked Census instrument for sector shares.")
+}
+
+base_sector_equal_csv <- base_sector_country_grid %>%
+  group_by(base_sector, base_sector_label) %>%
+  summarise(
+    mean_within_country_share = mean(within_country_share),
+    .groups = "drop"
+  ) %>%
+  arrange(desc(mean_within_country_share), base_sector)
+
+if (abs(sum(base_sector_equal_csv$mean_within_country_share) - 1) > 1e-10) {
+  stop("Equal-country base-sector mean shares do not sum to one.")
+}
+```
+
+## 4.1 Pooled composition
+
+```{r base-sector-pooled, fig.width=11, fig.height=8.5}
+base_sector_pooled_order <- base_sector_pooled_csv %>%
+  arrange(n_linked_census_instruments, base_sector_label) %>%
+  pull(base_sector_label)
+base_sector_pooled_plot_data <- base_sector_pooled_csv %>%
+  mutate(base_sector_label = factor(
+    base_sector_label,
+    levels = base_sector_pooled_order
+  ))
+
+base_sector_pooled_plot <- ggplot(
+  base_sector_pooled_plot_data,
+  aes(x = n_linked_census_instruments, y = base_sector_label)
+) +
+  geom_col(width = 0.62, fill = main_blue) +
+  geom_text(
+    aes(label = n_linked_census_instruments),
+    hjust = -0.22,
+    size = 3,
+    colour = "#333333"
+  ) +
+  scale_x_continuous(expand = expansion(mult = c(0, 0.1))) +
+  labs(
+    title = "Sector bearing the charge",
+    subtitle = "Revenue instruments with statutory allocations, pooled across countries",
+    x = "Number of revenue instruments",
+    y = NULL,
+    caption = paste0(
+      "Note: Current non-penalty revenue instruments are counted once within each ",
+      "country. Missing sector classifications are shown explicitly."
+    )
+  ) +
+  theme_imf
+
+write_plot_csv(base_sector_pooled_csv, "04_base_sector_pooled")
+save_plot(base_sector_pooled_plot, "04_base_sector_pooled", width = 11, height = 8.5)
+print(base_sector_pooled_plot)
+```
+
+## 4.2 Equal-country composition
+
+```{r base-sector-equal-country, fig.width=11, fig.height=8.5}
+base_sector_equal_order <- base_sector_equal_csv %>%
+  arrange(mean_within_country_share, base_sector_label) %>%
+  pull(base_sector_label)
+base_sector_equal_plot_data <- base_sector_equal_csv %>%
+  mutate(base_sector_label = factor(
+    base_sector_label,
+    levels = base_sector_equal_order
+  ))
+
+base_sector_equal_plot <- ggplot(
+  base_sector_equal_plot_data,
+  aes(x = mean_within_country_share, y = base_sector_label)
+) +
+  geom_col(width = 0.62, fill = main_blue) +
+  geom_text(
+    aes(label = percent(mean_within_country_share, accuracy = 0.1)),
+    hjust = -0.1,
+    size = 3,
+    colour = "#333333"
+  ) +
+  scale_x_continuous(
+    labels = label_percent(accuracy = 1),
+    expand = expansion(mult = c(0, 0.13))
+  ) +
+  labs(
+    title = "Sector bearing the charge",
+    subtitle = "Average within-country composition of revenue instruments with allocations",
+    x = "Average share within countries",
+    y = NULL,
+    caption = paste0(
+      "Note: Each country receives equal weight. Sectors absent in a country are ",
+      "assigned a zero share; missing classifications remain visible."
+    )
+  ) +
+  theme_imf
+
+write_plot_csv(base_sector_equal_csv, "04_base_sector_equal_country")
+save_plot(
+  base_sector_equal_plot,
+  "04_base_sector_equal_country",
+  width = 11,
+  height = 8.5
+)
+print(base_sector_equal_plot)
+```
+
+# 5. Destination-function preparation
+
+Destination functions are constructed directly from `SSA_EARMARK_ALLOCATIONS`: the primary function is combined with semicolon-separated detail values, whitespace is trimmed, and duplicates are removed at `country + pair_id + destination_function`. If both fields are absent, the pair is retained as `Missing`.
+
+```{r prepare-destination-functions}
+allocation_pairs <- SSA_EARMARK_ALLOCATIONS %>%
+  distinct(country, pair_id)
+
+primary_destination_functions <- SSA_EARMARK_ALLOCATIONS %>%
+  transmute(
+    country,
+    pair_id,
+    destination_function = str_trim(destination_function)
+  )
+
+detail_destination_functions <- SSA_EARMARK_ALLOCATIONS %>%
+  select(country, pair_id, destination_function_detail) %>%
+  separate_longer_delim(destination_function_detail, delim = ";") %>%
+  transmute(
+    country,
+    pair_id,
+    destination_function = str_trim(destination_function_detail)
+  )
+
+destination_tokens <- bind_rows(
+  primary_destination_functions,
+  detail_destination_functions
+) %>%
+  filter(!is.na(destination_function), destination_function != "") %>%
+  distinct(country, pair_id, destination_function)
+
+pairs_without_destination_function <- allocation_pairs %>%
+  anti_join(
+    destination_tokens %>% distinct(country, pair_id),
+    by = c("country", "pair_id")
+  ) %>%
+  mutate(destination_function = "Missing")
+
+destination_tokens <- bind_rows(
+  destination_tokens,
+  pairs_without_destination_function
+) %>%
+  distinct(country, pair_id, destination_function)
+
+cofog_group_mapping <- COFOG_GFSM2014_mapping %>%
+  mutate(
+    cofog_code = str_trim(cofog_code),
+    level = str_to_lower(str_trim(level)),
+    cofog_name = str_trim(cofog_name),
+    division_code = str_trim(division_code),
+    division_name = str_trim(division_name)
+  ) %>%
+  filter(level == "group") %>%
+  select(cofog_code, cofog_name, division_code, division_name)
+
+special_destination_mapping <- tribble(
+  ~destination_function, ~destination_function_name,
+  ~division_code, ~division_name, ~mapping_status,
+  "general_budget", "General budget",
+  "general_budget", "General budget", "special_non_gfsm",
+  "local_budget", "Local budget",
+  "local_budget", "Local budget", "special_non_gfsm",
+  "unallocated", "Unallocated",
+  "unallocated", "Unallocated", "special_non_gfsm",
+  "Missing", "Missing",
+  "Missing", "Missing", "missing"
+)
+
+destination_long <- destination_tokens %>%
+  left_join(
+    cofog_group_mapping,
+    by = c("destination_function" = "cofog_code")
+  ) %>%
+  left_join(
+    special_destination_mapping,
+    by = "destination_function",
+    suffix = c("_gfsm", "_special")
+  ) %>%
+  mutate(
+    mapping_status = case_when(
+      !is.na(cofog_name) ~ "mapped_gfsm_group",
+      !is.na(mapping_status) ~ mapping_status,
+      TRUE ~ "unmapped"
+    ),
+    destination_function_name = case_when(
+      !is.na(cofog_name) ~ cofog_name,
+      !is.na(destination_function_name) ~ destination_function_name,
+      TRUE ~ paste0("Unmapped code: ", destination_function)
+    ),
+    division_code = case_when(
+      !is.na(division_code_gfsm) ~ division_code_gfsm,
+      !is.na(division_code_special) ~ division_code_special,
+      TRUE ~ paste0("unmapped:", destination_function)
+    ),
+    division_name = case_when(
+      !is.na(division_name_gfsm) ~ division_name_gfsm,
+      !is.na(division_name_special) ~ division_name_special,
+      TRUE ~ paste0("Unmapped code: ", destination_function)
+    )
+  ) %>%
+  select(
+    country,
+    pair_id,
+    destination_function,
+    destination_function_name,
+    division_code,
+    division_name,
+    mapping_status
+  ) %>%
+  distinct()
+
+unmapped_function_codes <- destination_long %>%
+  filter(mapping_status == "unmapped") %>%
+  distinct(destination_function) %>%
+  arrange(destination_function)
+
+cat(
+  "Distinct allocation pairs:", nrow(allocation_pairs), "\n",
+  "Distinct pair-function links:", nrow(destination_long), "\n",
+  "Pairs with neither destination-function field:",
+  nrow(pairs_without_destination_function), "\n",
+  "Unmapped destination-function codes:", nrow(unmapped_function_codes), "\n"
+)
+if (nrow(unmapped_function_codes) > 0L) {
+  cat(
+    "Preserved unmapped codes:",
+    paste(unmapped_function_codes$destination_function, collapse = "; "),
+    "\n"
+  )
+}
+```
+
+# 6. Sector-to-destination routing
+
+The atomic link remains one distinct `country + pair_id + census_instrument_id + destination_function`. Aggregation to broad destination divisions does not collapse separate four-digit functions within the same allocation pair. As in the former flow diagrams, `unallocated` is excluded while general- and local-budget routing is retained.
+
+```{r prepare-source-destination-matrix}
+atomic_destination_links <- valid_expanded %>%
+  distinct(country, pair_id, census_instrument_id) %>%
+  inner_join(
+    linked_census_instruments,
+    by = c("country", "census_instrument_id")
+  ) %>%
+  inner_join(destination_long, by = c("country", "pair_id")) %>%
+  filter(destination_function != "unallocated") %>%
+  distinct(
+    country,
+    pair_id,
+    census_instrument_id,
+    destination_function,
+    base_sector,
+    base_sector_label,
+    division_code,
+    division_name
+  )
+
+source_destination_counts <- atomic_destination_links %>%
+  count(
+    base_sector,
+    base_sector_label,
+    division_code,
+    division_name,
+    name = "n_atomic_allocation_links"
+  )
+
+source_sector_universe <- source_destination_counts %>%
+  distinct(base_sector, base_sector_label)
+destination_division_universe <- source_destination_counts %>%
+  distinct(division_code, division_name)
+source_sector_totals <- source_destination_counts %>%
+  group_by(base_sector, base_sector_label) %>%
+  summarise(
+    source_sector_total_links = sum(n_atomic_allocation_links),
+    .groups = "drop"
+  )
+
+source_destination_bubble_csv <- source_sector_universe %>%
+  cross_join(destination_division_universe) %>%
+  left_join(
+    source_destination_counts,
+    by = c(
+      "base_sector", "base_sector_label",
+      "division_code", "division_name"
+    )
+  ) %>%
+  mutate(
+    n_atomic_allocation_links = replace_na(n_atomic_allocation_links, 0L)
+  ) %>%
+  left_join(
+    source_sector_totals,
+    by = c("base_sector", "base_sector_label")
+  ) %>%
+  mutate(
+    within_source_sector_share =
+      n_atomic_allocation_links / source_sector_total_links,
+    share_band = case_when(
+      within_source_sector_share == 0 ~ "0%",
+      within_source_sector_share <= 0.05 ~ ">0–5%",
+      within_source_sector_share <= 0.10 ~ "5–10%",
+      within_source_sector_share <= 0.20 ~ "10–20%",
+      within_source_sector_share <= 0.40 ~ "20–40%",
+      TRUE ~ ">40%"
+    ),
+    share_band = factor(share_band, levels = names(source_share_colours)),
+    destination_label = if_else(
+      str_detect(division_code, "^[0-9]+$"),
+      paste0(division_code, " - ", division_name),
+      division_name
+    ),
+    destination_order = case_when(
+      str_detect(division_code, "^[0-9]+$") ~ as.numeric(division_code),
+      division_code == "general_budget" ~ 1001,
+      division_code == "local_budget" ~ 1002,
+      TRUE ~ 1003
+    )
+  ) %>%
+  arrange(base_sector_label, destination_order, division_code) %>%
+  select(
+    base_sector,
+    base_sector_label,
+    division_code,
+    division_name,
+    destination_label,
+    destination_order,
+    n_atomic_allocation_links,
+    source_sector_total_links,
+    within_source_sector_share,
+    share_band
+  )
+
+if (sum(source_destination_bubble_csv$n_atomic_allocation_links) !=
+    nrow(atomic_destination_links)) {
+  stop("Source-destination matrix counts do not reconcile to atomic links.")
+}
+source_share_check <- source_destination_bubble_csv %>%
+  group_by(base_sector) %>%
+  summarise(
+    share_sum = sum(within_source_sector_share),
+    .groups = "drop"
+  )
+if (any(abs(source_share_check$share_sum - 1) > 1e-10)) {
+  stop("Source-destination matrix shares do not sum to one by source sector.")
+}
+```
+
+```{r source-destination-matrix-table}
+source_destination_bubble_csv
+```
+
+```{r source-destination-bubble-matrix, fig.width=16, fig.height=12}
+source_sector_levels <- source_sector_totals %>%
+  arrange(source_sector_total_links, base_sector_label) %>%
+  pull(base_sector_label)
+destination_levels <- source_destination_bubble_csv %>%
+  distinct(destination_label, destination_order) %>%
+  arrange(destination_order, destination_label) %>%
+  pull(destination_label)
+
+source_destination_bubble_plot <- source_destination_bubble_csv %>%
+  mutate(
+    base_sector_label = factor(
+      base_sector_label,
+      levels = source_sector_levels
+    ),
+    destination_label = factor(
+      destination_label,
+      levels = destination_levels
+    )
+  ) %>%
+  ggplot(
+    aes(
+      x = destination_label,
+      y = base_sector_label,
+      size = n_atomic_allocation_links,
+      fill = share_band
+    )
+  ) +
+  geom_point(shape = 21, colour = "#758696", stroke = 0.25) +
+  scale_size_area(
+    max_size = 12,
+    breaks = pretty_breaks(n = 4),
+    name = "Distinct atomic links"
+  ) +
+  scale_fill_manual(
+    values = source_share_colours,
+    drop = FALSE,
+    name = "Share within source sector"
+  ) +
+  guides(
+    fill = guide_legend(
+      order = 1,
+      nrow = 1,
+      byrow = TRUE,
+      override.aes = list(size = 5)
+    ),
+    size = guide_legend(order = 2)
+  ) +
+  labs(
+    title = "Statutory routing from charged sectors to allocation destinations",
+    subtitle = paste0(
+      "Bubble area shows the number of legal allocation links; colour shows ",
+      "each destination's share within the charged sector"
+    ),
+    x = "Broad allocation destination",
+    y = "Sector bearing the charge",
+    caption = paste0(
+      "Note: Unallocated destinations are excluded. General- and local-budget ",
+      "routing is retained."
+    )
+  ) +
+  theme_imf +
+  theme(
+    axis.text.x = element_text(angle = 38, hjust = 1, vjust = 1),
+    panel.grid.major = element_line(colour = "#E5E8EB", linewidth = 0.3),
+    legend.position = "bottom",
+    legend.box = "vertical"
+  )
+
+write_plot_csv(
+  source_destination_bubble_csv,
+  "04_source_destination_bubble_matrix_division"
+)
+save_plot(
+  source_destination_bubble_plot,
+  "04_source_destination_bubble_matrix_division",
+  width = 16,
+  height = 12
+)
+print(source_destination_bubble_plot)
+```
+
+## 6.1 Heatmap version
+
+The heatmap uses the same atomic allocation-link counts and within-source-sector denominator as the bubble matrix. Raw link counts are printed only in non-empty cells.
+
+```{r prepare-source-destination-heatmap}
+source_destination_heatmap_csv <- source_destination_bubble_csv %>%
+  mutate(
+    cell_label = if_else(
+      n_atomic_allocation_links > 0,
+      as.character(n_atomic_allocation_links),
+      NA_character_
+    ),
+    label_colour = if_else(
+      within_source_sector_share >= 0.35,
+      "#FFFFFF",
+      "#243746"
+    )
+  ) %>%
+  arrange(base_sector_label, destination_order, division_code)
+
+if (sum(source_destination_heatmap_csv$n_atomic_allocation_links) !=
+    nrow(atomic_destination_links)) {
+  stop("Source-destination heatmap counts do not reconcile to atomic links.")
+}
+```
+
+```{r source-destination-heatmap-table}
+source_destination_heatmap_csv
+```
+
+```{r source-destination-heatmap-division, fig.width=16, fig.height=12}
+source_heatmap_sector_levels <- source_sector_totals %>%
+  arrange(source_sector_total_links, base_sector_label) %>%
+  pull(base_sector_label)
+source_heatmap_destination_levels <- source_destination_heatmap_csv %>%
+  distinct(destination_label, destination_order) %>%
+  arrange(destination_order, destination_label) %>%
+  pull(destination_label)
+
+source_destination_heatmap_plot <- source_destination_heatmap_csv %>%
+  mutate(
+    base_sector_label = factor(
+      base_sector_label,
+      levels = source_heatmap_sector_levels
+    ),
+    destination_label = factor(
+      str_wrap(destination_label, width = 22),
+      levels = str_wrap(source_heatmap_destination_levels, width = 22)
+    )
+  ) %>%
+  ggplot(
+    aes(
+      x = destination_label,
+      y = base_sector_label,
+      fill = within_source_sector_share
+    )
+  ) +
+  geom_tile(colour = "white", linewidth = 0.45) +
+  geom_text(
+    data = ~filter(.x, n_atomic_allocation_links > 0),
+    aes(label = cell_label, colour = label_colour),
+    size = 2.8,
+    fontface = "bold",
+    show.legend = FALSE
+  ) +
+  scale_colour_identity() +
+  scale_fill_gradientn(
+    colours = heatmap_share_colours,
+    values = heatmap_share_values,
+    limits = c(0, 1),
+    breaks = c(0, 0.10, 0.25, 0.50, 0.75, 1),
+    labels = label_percent(accuracy = 1),
+    oob = squish,
+    name = "Share within source sector"
+  ) +
+  guides(
+    fill = guide_colourbar(
+      title.position = "top",
+      barwidth = grid::unit(8, "cm"),
+      barheight = grid::unit(0.45, "cm")
+    )
+  ) +
+  labs(
+    title = "From charged sectors to allocation destinations",
+    subtitle = paste0(
+      "Colour shows each destination's share of statutory allocation links ",
+      "within the source sector; cells show link counts"
+    ),
+    x = "Broad allocation destination",
+    y = "Sector bearing the charge",
+    caption = paste0(
+      "Note: Unallocated destinations are excluded. General- and local-budget ",
+      "routing is retained."
+    )
+  ) +
+  theme_imf +
+  theme(
+    axis.text.x = element_text(
+      angle = 38,
+      hjust = 1,
+      vjust = 1,
+      size = 9
+    ),
+    axis.text.y = element_text(size = 9.3),
+    panel.grid = element_blank(),
+    legend.position = "bottom",
+    legend.justification = "center"
+  )
+
+write_plot_csv(
+  source_destination_heatmap_csv,
+  "04_source_destination_heatmap_division"
+)
+save_plot(
+  source_destination_heatmap_plot,
+  "04_source_destination_heatmap_division",
+  width = 16,
+  height = 12
+)
+print(source_destination_heatmap_plot)
+```
+
+# 7. Destination composition
+
+Destination composition is calculated at two levels. The four-digit unit is one distinct `country + pair_id + destination_function`; the division unit is one distinct `country + pair_id + division_code`, so multiple four-digit functions in the same division collapse to one division link. Because one allocation pair may finance several functions, pooled function-link counts can exceed the number of allocation pairs.
+
+For equal-country composition and the country-by-destination bubble matrix, the denominator is the level-specific number of distinct pair-function links in that country. Absent categories are completed with zero, so country shares and the unweighted mean shares sum to 100 percent. `unallocated` remains in these composition displays and is excluded before identifying each country's largest allocation destination and recomputing its share. The supplementary stacked chart is limited to countries with more than 30 allocation pairs and groups all but the five largest substantive divisions as `Other`, without changing the denominator.
+
+```{r prepare-destination-composition}
+cofog4_links <- destination_long %>%
+  transmute(
+    country,
+    pair_id,
+    category_code = destination_function,
+    category_name = destination_function_name
+  ) %>%
+  distinct()
+
+division_links <- destination_long %>%
+  transmute(
+    country,
+    pair_id,
+    category_code = division_code,
+    category_name = division_name
+  ) %>%
+  distinct()
+
+prepare_destination_level <- function(category_links) {
+  category_links <- category_links %>%
+    distinct(country, pair_id, category_code, category_name)
+
+  category_universe <- category_links %>%
+    distinct(category_code, category_name) %>%
+    arrange(category_code, category_name)
+
+  country_totals <- category_links %>%
+    count(country, name = "country_total_function_links")
+
+  country_grid <- crossing(
+    country = country_universe$country,
+    category_universe
+  ) %>%
+    left_join(
+      category_links %>%
+        count(country, category_code, category_name,
+              name = "n_function_links"),
+      by = c("country", "category_code", "category_name")
+    ) %>%
+    mutate(n_function_links = replace_na(n_function_links, 0L)) %>%
+    left_join(country_totals, by = "country") %>%
+    left_join(
+      sample_coverage %>% select(country, country_name),
+      by = "country"
+    ) %>%
+    mutate(
+      within_country_share = n_function_links /
+        country_total_function_links
+    ) %>%
+    select(
+      country,
+      country_name,
+      category_code,
+      category_name,
+      n_function_links,
+      country_total_function_links,
+      within_country_share
+    ) %>%
+    arrange(country_name, category_code, category_name)
+
+  if (any(is.na(country_grid$within_country_share))) {
+    stop("A sample country has no destination-function link at this level.")
+  }
+  country_share_check <- country_grid %>%
+    group_by(country) %>%
+    summarise(share_sum = sum(within_country_share), .groups = "drop")
+  if (any(abs(country_share_check$share_sum - 1) > 1e-10)) {
+    stop("Within-country destination shares do not sum to one.")
+  }
+
+  pooled <- category_links %>%
+    count(category_code, category_name, name = "n_function_links") %>%
+    arrange(desc(n_function_links), category_code, category_name)
+
+  equal_country <- country_grid %>%
+    group_by(category_code, category_name) %>%
+    summarise(
+      mean_within_country_share = mean(within_country_share),
+      .groups = "drop"
+    ) %>%
+    arrange(desc(mean_within_country_share), category_code, category_name)
+
+  if (abs(sum(equal_country$mean_within_country_share) - 1) > 1e-10) {
+    stop("Equal-country destination shares do not sum to one.")
+  }
+
+  ranked_destinations <- category_links %>%
+    filter(category_code != "unallocated") %>%
+    count(country, category_code, category_name, name = "n_function_links") %>%
+    group_by(country) %>%
+    mutate(
+      country_total_eligible_links = sum(n_function_links),
+      within_country_share = n_function_links / country_total_eligible_links
+    ) %>%
+    arrange(
+      country,
+      desc(n_function_links),
+      category_code,
+      category_name
+    ) %>%
+    mutate(rank = row_number()) %>%
+    ungroup()
+
+  largest_destination <- ranked_destinations %>%
+    filter(rank == 1L) %>%
+    transmute(
+      country,
+      largest_code = category_code,
+      largest_name = category_name,
+      largest_n_links = n_function_links,
+      largest_share = within_country_share
+    ) %>%
+    left_join(
+      sample_coverage %>% select(country, country_name),
+      by = "country"
+    ) %>%
+    select(
+      country,
+      country_name,
+      largest_code,
+      largest_name,
+      largest_n_links,
+      largest_share
+    ) %>%
+    arrange(largest_share, country_name)
+
+  if (nrow(largest_destination) != nrow(country_universe)) {
+    stop("Largest-destination summary does not retain every sample country.")
+  }
+
+  list(
+    pooled = pooled,
+    equal_country = equal_country,
+    country_composition = country_grid,
+    largest_destination = largest_destination
+  )
+}
+
+cofog4_composition <- prepare_destination_level(cofog4_links)
+division_composition <- prepare_destination_level(division_links)
+
+make_destination_label <- function(code, name) {
+  if_else(
+    str_detect(code, "^[0-9]+$"),
+    paste0(code, " - ", name),
+    name
+  )
+}
+
+make_destination_bar_plot <- function(
+  plot_data,
+  value_column,
+  title,
+  subtitle,
+  x_title,
+  percent_axis = FALSE
+) {
+  prepared <- plot_data %>%
+    mutate(
+      display_label = make_destination_label(category_code, category_name),
+      display_label = str_wrap(display_label, width = 52),
+      plotted_value = .data[[value_column]]
+    )
+  label_order <- prepared %>%
+    arrange(plotted_value, display_label) %>%
+    pull(display_label)
+  prepared <- prepared %>%
+    mutate(
+      display_label = factor(display_label, levels = label_order),
+      value_label = if (percent_axis) {
+        percent(plotted_value, accuracy = 0.1)
+      } else {
+        format(plotted_value, trim = TRUE)
+      }
+    )
+
+  plot_object <- ggplot(
+    prepared,
+    aes(x = plotted_value, y = display_label)
+  ) +
+    geom_col(width = 0.62, fill = main_blue) +
+    geom_text(
+      aes(label = value_label),
+      hjust = -0.1,
+      size = 2.75,
+      colour = "#333333"
+    ) +
+    labs(
+      title = title,
+      subtitle = subtitle,
+      x = x_title,
+      y = NULL,
+      caption = paste0(
+        "Note: One statutory allocation may support several destinations, so the ",
+        "number of allocation-destination links can exceed the number of instruments."
+      )
+    ) +
+    theme_imf
+
+  if (percent_axis) {
+    plot_object <- plot_object +
+      scale_x_continuous(
+        labels = label_percent(accuracy = 1),
+        expand = expansion(mult = c(0, 0.14))
+      )
+  } else {
+    plot_object <- plot_object +
+      scale_x_continuous(expand = expansion(mult = c(0, 0.11)))
+  }
+  plot_object
+}
+
+make_largest_destination_plot <- function(plot_data, title, subtitle) {
+  country_levels <- plot_data %>%
+    arrange(largest_share, country_name) %>%
+    pull(country_name)
+  prepared <- plot_data %>%
+    mutate(
+      country_name = factor(country_name, levels = country_levels),
+      destination_label = str_wrap(largest_name, width = 38),
+      label_on_left = largest_share >= 0.62,
+      label_x = largest_share + if_else(label_on_left, -0.018, 0.018),
+      label_hjust = if_else(label_on_left, 1, 0)
+    )
+
+  ggplot(
+    prepared,
+    aes(x = largest_share, y = country_name)
+  ) +
+    geom_segment(
+      aes(x = 0, xend = largest_share, yend = country_name),
+      linewidth = 0.65,
+      colour = imf_neutral
+    ) +
+    geom_point(size = 4, colour = main_blue) +
+    geom_text(
+      aes(
+        x = label_x,
+        label = destination_label,
+        hjust = label_hjust
+      ),
+      size = 2.9,
+      lineheight = 0.9,
+      colour = "#333333"
+    ) +
+    scale_x_continuous(
+      limits = c(0, 1.02),
+      breaks = c(0, 0.25, 0.5, 0.75, 1),
+      labels = label_percent(accuracy = 1),
+      expand = expansion(mult = c(0, 0))
+    ) +
+    labs(
+      title = title,
+      subtitle = subtitle,
+      x = "Share directed to the largest allocation destination",
+      y = NULL,
+      caption = paste0(
+        "Note: Unallocated destinations are excluded before calculating shares. ",
+        "When destinations are tied, the displayed label follows code and name order."
+      )
+    ) +
+    theme_imf
+}
+```
+
+## 7.1 Detailed government-function destinations
+
+```{r destination-pooled-cofog4, fig.width=14, fig.height=16}
+destination_pooled_cofog4_csv <- cofog4_composition$pooled %>%
+  rename(
+    destination_function = category_code,
+    destination_function_name = category_name
+  )
+destination_pooled_cofog4_plot <- make_destination_bar_plot(
+  cofog4_composition$pooled,
+  value_column = "n_function_links",
+  title = "Allocation destinations across countries",
+  subtitle = "Statutory allocations directed to detailed government functions",
+  x_title = "Number of allocation-destination links"
+)
+
+write_plot_csv(destination_pooled_cofog4_csv, "04_destination_pooled_cofog4")
+save_plot(
+  destination_pooled_cofog4_plot,
+  "04_destination_pooled_cofog4",
+  width = 14,
+  height = 16
+)
+print(destination_pooled_cofog4_plot)
+```
+
+```{r destination-equal-country-cofog4, fig.width=14, fig.height=16}
+destination_equal_country_cofog4_csv <- cofog4_composition$equal_country %>%
+  rename(
+    destination_function = category_code,
+    destination_function_name = category_name
+  )
+destination_equal_country_cofog4_plot <- make_destination_bar_plot(
+  cofog4_composition$equal_country,
+  value_column = "mean_within_country_share",
+  title = "Average allocation pattern across countries",
+  subtitle = "Each country receives equal weight across detailed government functions",
+  x_title = "Average share within countries",
+  percent_axis = TRUE
+)
+
+write_plot_csv(
+  destination_equal_country_cofog4_csv,
+  "04_destination_equal_country_cofog4"
+)
+save_plot(
+  destination_equal_country_cofog4_plot,
+  "04_destination_equal_country_cofog4",
+  width = 14,
+  height = 16
+)
+print(destination_equal_country_cofog4_plot)
+```
+
+```{r destination-largest-cofog4, fig.width=14, fig.height=9.5}
+destination_largest_cofog4_csv <- cofog4_composition$largest_destination
+destination_largest_cofog4_plot <- make_largest_destination_plot(
+  destination_largest_cofog4_csv,
+  title = "Largest allocation destination in each country",
+  subtitle = "Share directed to the leading detailed government function"
+)
+
+write_plot_csv(destination_largest_cofog4_csv, "04_destination_largest_cofog4")
+save_plot(
+  destination_largest_cofog4_plot,
+  "04_destination_largest_cofog4",
+  width = 14,
+  height = 9.5
+)
+print(destination_largest_cofog4_plot)
+```
+
+## 7.2 Broad government-function destinations
+
+```{r destination-pooled-division, fig.width=12, fig.height=8}
+destination_pooled_division_csv <- division_composition$pooled %>%
+  rename(
+    division_code = category_code,
+    division_name = category_name
+  )
+destination_pooled_division_plot <- make_destination_bar_plot(
+  division_composition$pooled,
+  value_column = "n_function_links",
+  title = "Broad allocation destinations across countries",
+  subtitle = "Statutory allocations directed to major government functions",
+  x_title = "Number of allocation-destination links"
+)
+
+write_plot_csv(destination_pooled_division_csv, "04_destination_pooled_division")
+save_plot(
+  destination_pooled_division_plot,
+  "04_destination_pooled_division",
+  width = 12,
+  height = 8
+)
+print(destination_pooled_division_plot)
+```
+
+```{r destination-equal-country-division, fig.width=12, fig.height=8}
+destination_equal_country_division_csv <- division_composition$equal_country %>%
+  rename(
+    division_code = category_code,
+    division_name = category_name
+  )
+destination_equal_country_division_plot <- make_destination_bar_plot(
+  division_composition$equal_country,
+  value_column = "mean_within_country_share",
+  title = "Average pattern of broad allocation destinations",
+  subtitle = "Each country receives equal weight across major government functions",
+  x_title = "Average share within countries",
+  percent_axis = TRUE
+)
+
+write_plot_csv(
+  destination_equal_country_division_csv,
+  "04_destination_equal_country_division"
+)
+save_plot(
+  destination_equal_country_division_plot,
+  "04_destination_equal_country_division",
+  width = 12,
+  height = 8
+)
+print(destination_equal_country_division_plot)
+```
+
+```{r prepare-destination-country-bubble-matrix}
+destination_country_bubble_division_csv <-
+  division_composition$country_composition %>%
+  transmute(
+    country,
+    country_name,
+    division_code = category_code,
+    division_name = category_name,
+    destination_label = make_destination_label(
+      category_code,
+      category_name
+    ),
+    destination_order = case_when(
+      str_detect(category_code, "^[0-9]+$") ~ as.numeric(category_code),
+      category_code == "general_budget" ~ 1001,
+      category_code == "local_budget" ~ 1002,
+      category_code == "unallocated" ~ 1003,
+      TRUE ~ 1004
+    ),
+    n_function_links,
+    country_total_function_links,
+    within_country_share,
+    share_label = if_else(
+      within_country_share >= 0.10,
+      percent(within_country_share, accuracy = 1),
+      NA_character_
+    )
+  ) %>%
+  arrange(country_name, destination_order, division_code)
+
+country_bubble_share_check <- destination_country_bubble_division_csv %>%
+  group_by(country) %>%
+  summarise(
+    share_sum = sum(within_country_share),
+    .groups = "drop"
+  )
+if (any(abs(country_bubble_share_check$share_sum - 1) > 1e-10)) {
+  stop("Country-destination bubble shares do not sum to one by country.")
+}
+if (any(
+  !is.na(destination_country_bubble_division_csv$share_label) &
+    destination_country_bubble_division_csv$within_country_share < 0.10
+)) {
+  stop("A country-destination bubble below 10 percent has a label.")
+}
+```
+
+```{r destination-country-bubble-matrix-table}
+destination_country_bubble_division_csv
+```
+
+```{r destination-country-bubble-matrix-division, fig.width=16, fig.height=10}
+country_bubble_destination_levels <-
+  destination_country_bubble_division_csv %>%
+  distinct(destination_label, destination_order) %>%
+  arrange(destination_order, destination_label) %>%
+  pull(destination_label)
+country_bubble_country_levels <-
+  destination_country_bubble_division_csv %>%
+  distinct(country_name) %>%
+  arrange(desc(country_name)) %>%
+  pull(country_name)
+
+destination_country_bubble_division_plot <-
+  destination_country_bubble_division_csv %>%
+  mutate(
+    destination_label = factor(
+      str_wrap(destination_label, width = 22),
+      levels = str_wrap(country_bubble_destination_levels, width = 22)
+    ),
+    country_name = factor(
+      country_name,
+      levels = country_bubble_country_levels
+    )
+  ) %>%
+  ggplot(
+    aes(
+      x = destination_label,
+      y = country_name,
+      size = within_country_share
+    )
+  ) +
+  geom_point(
+    shape = 21,
+    fill = matrix_blue,
+    colour = matrix_blue,
+    stroke = 0.2
+  ) +
+  geom_text(
+    data = ~filter(.x, within_country_share >= 0.10),
+    aes(label = share_label),
+    colour = "white",
+    size = 2.35,
+    fontface = "bold",
+    show.legend = FALSE
+  ) +
+  scale_size_area(
+    max_size = 18,
+    limits = c(0, 1),
+    breaks = c(0.10, 0.25, 0.50, 0.75),
+    labels = label_percent(accuracy = 1),
+    name = "Within-country share"
+  ) +
+  labs(
+    title = "How statutory allocations are distributed across broad destinations",
+    subtitle = paste0(
+      "Bubble area shows each destination's share of allocation-destination ",
+      "links within a country"
+    ),
+    x = "Broad allocation destination",
+    y = NULL,
+    caption = paste0(
+      "Note: Percentages of 10% or more are labelled. Shares are calculated ",
+      "across all broad destinations and sum to 100% within each country."
+    )
+  ) +
+  theme_imf +
+  theme(
+    axis.text.x = element_text(angle = 38, hjust = 1, vjust = 1),
+    panel.grid.major = element_line(colour = "#E5E8EB", linewidth = 0.3),
+    legend.position = "bottom"
+  )
+
+write_plot_csv(
+  destination_country_bubble_division_csv,
+  "04_destination_country_bubble_matrix_division"
+)
+save_plot(
+  destination_country_bubble_division_plot,
+  "04_destination_country_bubble_matrix_division",
+  width = 16,
+  height = 10
+)
+print(destination_country_bubble_division_plot)
+```
+
+```{r prepare-destination-country-heatmap}
+destination_country_heatmap_division_csv <-
+  destination_country_bubble_division_csv %>%
+  mutate(
+    heatmap_label = if_else(
+      within_country_share >= 0.10,
+      percent(within_country_share, accuracy = 1),
+      NA_character_
+    ),
+    label_colour = if_else(
+      within_country_share >= 0.35,
+      "#FFFFFF",
+      "#243746"
+    )
+  ) %>%
+  arrange(country_name, destination_order, division_code)
+
+country_heatmap_share_check <-
+  destination_country_heatmap_division_csv %>%
+  group_by(country) %>%
+  summarise(
+    share_sum = sum(within_country_share),
+    .groups = "drop"
+  )
+if (any(abs(country_heatmap_share_check$share_sum - 1) > 1e-10)) {
+  stop("Country-destination heatmap shares do not sum to one by country.")
+}
+```
+
+```{r destination-country-heatmap-table}
+destination_country_heatmap_division_csv
+```
+
+```{r destination-country-heatmap-division, fig.width=16, fig.height=10}
+country_heatmap_destination_levels <-
+  destination_country_heatmap_division_csv %>%
+  distinct(destination_label, destination_order) %>%
+  arrange(destination_order, destination_label) %>%
+  pull(destination_label)
+country_heatmap_country_levels <-
+  destination_country_heatmap_division_csv %>%
+  distinct(country_name) %>%
+  arrange(desc(country_name)) %>%
+  pull(country_name)
+
+destination_country_heatmap_division_plot <-
+  destination_country_heatmap_division_csv %>%
+  mutate(
+    destination_label = factor(
+      str_wrap(destination_label, width = 22),
+      levels = str_wrap(country_heatmap_destination_levels, width = 22)
+    ),
+    country_name = factor(
+      country_name,
+      levels = country_heatmap_country_levels
+    )
+  ) %>%
+  ggplot(
+    aes(
+      x = destination_label,
+      y = country_name,
+      fill = within_country_share
+    )
+  ) +
+  geom_tile(colour = "white", linewidth = 0.45) +
+  geom_text(
+    data = ~filter(.x, within_country_share >= 0.10),
+    aes(label = heatmap_label, colour = label_colour),
+    size = 2.75,
+    fontface = "bold",
+    show.legend = FALSE
+  ) +
+  scale_colour_identity() +
+  scale_fill_gradientn(
+    colours = heatmap_share_colours,
+    values = heatmap_share_values,
+    limits = c(0, 1),
+    breaks = c(0, 0.10, 0.25, 0.50, 0.75, 1),
+    labels = label_percent(accuracy = 1),
+    oob = squish,
+    name = "Share within country"
+  ) +
+  guides(
+    fill = guide_colourbar(
+      title.position = "top",
+      barwidth = grid::unit(8, "cm"),
+      barheight = grid::unit(0.45, "cm")
+    )
+  ) +
+  labs(
+    title = "Distribution of allocation destinations across countries",
+    subtitle = paste0(
+      "Colour shows each destination's share of allocation-destination links ",
+      "within a country"
+    ),
+    x = "Broad allocation destination",
+    y = NULL,
+    caption = paste0(
+      "Note: Percentages of 10% or more are labelled. Shares sum to 100% ",
+      "within each country."
+    )
+  ) +
+  theme_imf +
+  theme(
+    axis.text.x = element_text(
+      angle = 38,
+      hjust = 1,
+      vjust = 1,
+      size = 9
+    ),
+    axis.text.y = element_text(size = 9.4),
+    panel.grid = element_blank(),
+    legend.position = "bottom",
+    legend.justification = "center"
+  )
+
+write_plot_csv(
+  destination_country_heatmap_division_csv,
+  "04_destination_country_heatmap_division"
+)
+save_plot(
+  destination_country_heatmap_division_plot,
+  "04_destination_country_heatmap_division",
+  width = 16,
+  height = 10
+)
+print(destination_country_heatmap_division_plot)
+```
+
+## 7.3 Supplementary destination composition
+
+The supplementary 100 percent stacked chart retains only countries with more than 30 allocation pairs. It displays the five largest substantive government-function divisions across that subset, combines all remaining substantive divisions as `Other`, and keeps general-budget, local-budget, and unallocated routing separate. Grouping is for display only: each underlying country-pair-division link remains in the denominator.
+
+```{r prepare-supplementary-destination-stack}
+allocation_pair_reconciliation <- SSA_EARMARK_ALLOCATIONS %>%
+  distinct(country, pair_id) %>%
+  count(country, name = "observed_P_allocation_pairs") %>%
+  left_join(
+    country_summary_numeric %>%
+      select(country, P_allocation_pairs),
+    by = "country"
+  )
+
+if (any(is.na(allocation_pair_reconciliation$observed_P_allocation_pairs)) ||
+    any(is.na(allocation_pair_reconciliation$P_allocation_pairs)) ||
+    any(
+      allocation_pair_reconciliation$observed_P_allocation_pairs !=
+        allocation_pair_reconciliation$P_allocation_pairs
+    )) {
+  stop(
+    "Observed allocation-pair counts do not reconcile to the country summary."
+  )
+}
+
+supplementary_filter_audit <- allocation_pair_reconciliation %>%
+  left_join(
+    sample_coverage %>% select(country, country_name),
+    by = "country"
+  ) %>%
+  mutate(included = P_allocation_pairs > 30) %>%
+  arrange(desc(P_allocation_pairs), country_name)
+
+supplementary_countries <- supplementary_filter_audit %>%
+  filter(included) %>%
+  select(country, country_name, P_allocation_pairs)
+if (nrow(supplementary_countries) == 0L) {
+  stop("No country has more than 30 allocation pairs.")
+}
+
+supplementary_substantive_ranking <- division_links %>%
+  semi_join(supplementary_countries, by = "country") %>%
+  filter(str_detect(category_code, "^[0-9]{3}$")) %>%
+  count(
+    category_code,
+    category_name,
+    name = "n_function_links"
+  ) %>%
+  arrange(desc(n_function_links), category_code, category_name) %>%
+  mutate(pooled_rank = row_number())
+
+supplementary_top_five <- supplementary_substantive_ranking %>%
+  slice_head(n = 5)
+if (nrow(supplementary_top_five) != 5L) {
+  stop("Fewer than five substantive destination divisions are available.")
+}
+
+supplementary_cutoff_count <-
+  supplementary_top_five$n_function_links[[5]]
+supplementary_cutoff_tie <- supplementary_substantive_ranking %>%
+  filter(n_function_links == supplementary_cutoff_count)
+
+supplementary_top_palette <- set_names(
+  supplementary_substantive_colours[
+    seq_len(nrow(supplementary_top_five))
+  ],
+  supplementary_top_five$category_code
+)
+supplementary_palette <- c(
+  supplementary_top_palette,
+  supplementary_special_colours
+)
+
+supplementary_category_universe <- bind_rows(
+  supplementary_top_five %>%
+    transmute(
+      division_group = category_code,
+      division_group_name = category_name,
+      category_type = "top_substantive",
+      plot_order = pooled_rank
+    ),
+  tibble(
+    division_group = c(
+      "Other", "general_budget", "local_budget", "unallocated"
+    ),
+    division_group_name = c(
+      "Other", "General budget", "Local budget", "Unallocated"
+    ),
+    category_type = c(
+      "other_substantive", "special", "special", "special"
+    ),
+    plot_order = 6:9
+  )
+) %>%
+  mutate(
+    category_label = make_destination_label(
+      division_group,
+      division_group_name
+    ),
+    fill_colour = unname(supplementary_palette[division_group])
+  )
+
+if (any(is.na(supplementary_category_universe$fill_colour))) {
+  stop("A supplementary destination category has no assigned colour.")
+}
+
+supplementary_grouped_links <- division_links %>%
+  semi_join(supplementary_countries, by = "country") %>%
+  mutate(
+    division_group = case_when(
+      str_detect(category_code, "^[0-9]{3}$") &
+        !category_code %in% supplementary_top_five$category_code ~ "Other",
+      TRUE ~ category_code
+    )
+  )
+
+supplementary_country_totals <- supplementary_grouped_links %>%
+  count(country, name = "country_total_function_links")
+supplementary_group_counts <- supplementary_grouped_links %>%
+  count(country, division_group, name = "n_function_links")
+
+destination_supplementary_stacked_division_csv <-
+  supplementary_countries %>%
+  cross_join(supplementary_category_universe) %>%
+  left_join(
+    supplementary_group_counts,
+    by = c("country", "division_group")
+  ) %>%
+  mutate(n_function_links = replace_na(n_function_links, 0L)) %>%
+  left_join(supplementary_country_totals, by = "country") %>%
+  mutate(
+    within_country_share =
+      n_function_links / country_total_function_links
+  ) %>%
+  select(
+    country,
+    country_name,
+    P_allocation_pairs,
+    division_group,
+    division_group_name,
+    category_type,
+    category_label,
+    plot_order,
+    n_function_links,
+    country_total_function_links,
+    within_country_share,
+    fill_colour
+  ) %>%
+  arrange(desc(P_allocation_pairs), country_name, plot_order)
+
+supplementary_share_check <-
+  destination_supplementary_stacked_division_csv %>%
+  group_by(country) %>%
+  summarise(
+    share_sum = sum(within_country_share),
+    .groups = "drop"
+  )
+if (any(abs(supplementary_share_check$share_sum - 1) > 1e-10)) {
+  stop("Supplementary destination shares do not sum to one by country.")
+}
+if (sum(
+  destination_supplementary_stacked_division_csv$n_function_links
+) != nrow(supplementary_grouped_links)) {
+  stop("Supplementary grouped counts do not reconcile to division links.")
+}
+
+cat(
+  "Supplementary destination filter: countries",
+  nrow(country_universe), "to", nrow(supplementary_countries),
+  "; allocation pairs",
+  sum(allocation_pair_reconciliation$P_allocation_pairs), "to",
+  sum(supplementary_countries$P_allocation_pairs), "\n",
+  "Fifth-place pooled count:", supplementary_cutoff_count,
+  "; divisions tied at the cutoff:",
+  paste(supplementary_cutoff_tie$category_code, collapse = ", "), "\n"
+)
+```
+
+```{r supplementary-destination-stack-table}
+supplementary_filter_audit
+supplementary_substantive_ranking
+destination_supplementary_stacked_division_csv
+```
+
+```{r supplementary-destination-stack-division, fig.width=14, fig.height=8}
+supplementary_country_levels <- supplementary_countries %>%
+  arrange(P_allocation_pairs, desc(country_name)) %>%
+  pull(country_name)
+supplementary_category_levels <-
+  supplementary_category_universe %>%
+  arrange(plot_order) %>%
+  pull(division_group)
+
+destination_supplementary_stacked_division_plot <-
+  destination_supplementary_stacked_division_csv %>%
+  mutate(
+    country_name = factor(
+      country_name,
+      levels = supplementary_country_levels
+    ),
+    division_group = factor(
+      division_group,
+      levels = supplementary_category_levels
+    )
+  ) %>%
+  ggplot(
+    aes(
+      x = within_country_share,
+      y = country_name,
+      fill = division_group
+    )
+  ) +
+  geom_col(width = 0.68) +
+  scale_x_continuous(
+    breaks = c(0, 0.25, 0.50, 0.75, 1),
+    labels = label_percent(accuracy = 1),
+    expand = expansion(mult = c(0, 0))
+  ) +
+  scale_fill_manual(
+    values = supplementary_palette,
+    breaks = supplementary_category_levels,
+    labels = supplementary_category_universe %>%
+      arrange(plot_order) %>%
+      pull(category_label),
+    drop = FALSE,
+    name = "Allocation destination"
+  ) +
+  labs(
+    title = "Where statutory allocations are directed",
+    subtitle = paste0(
+      "Countries with more than 30 allocation channels; five leading ",
+      "government functions are shown separately"
+    ),
+    x = "Share of allocation-destination links within country",
+    y = NULL,
+    caption = paste0(
+      "Note: Other combines the remaining substantive divisions. General ",
+      "budget, Local budget, and Unallocated remain separate. Shares sum to ",
+      "100% within each country."
+    )
+  ) +
+  theme_imf +
+  theme(
+    legend.position = "bottom",
+    legend.box = "vertical",
+    legend.text = element_text(size = 8.8),
+    axis.text.y = element_text(size = 9.6),
+    panel.grid.major.x = element_line(colour = "#E5E8EB", linewidth = 0.3)
+  ) +
+  guides(fill = guide_legend(ncol = 3, byrow = TRUE))
+
+write_plot_csv(
+  destination_supplementary_stacked_division_csv,
+  "04_destination_supplementary_stacked_division"
+)
+save_plot(
+  destination_supplementary_stacked_division_plot,
+  "04_destination_supplementary_stacked_division",
+  width = 14,
+  height = 8
+)
+print(destination_supplementary_stacked_division_plot)
+```
+
+```{r destination-largest-division, fig.width=14, fig.height=9.5}
+destination_largest_division_csv <- division_composition$largest_destination
+destination_largest_division_plot <- make_largest_destination_plot(
+  destination_largest_division_csv,
+  title = "Largest broad allocation destination in each country",
+  subtitle = "Share directed to the leading major government function"
+)
+
+write_plot_csv(
+  destination_largest_division_csv,
+  "04_destination_largest_division"
+)
+save_plot(
+  destination_largest_division_plot,
+  "04_destination_largest_division",
+  width = 14,
+  height = 9.5
+)
+print(destination_largest_division_plot)
+```
+
+# 8. Institutional routing
+
+Beneficiary composition uses one distinct `country + pair_id` as one statutory allocation. Repeated evidence rows do not increase the count. Missing beneficiary classifications remain visible as a separate category.
+
+```{r prepare-beneficiary-composition}
+make_beneficiary_label <- function(values) {
+  case_when(
+    values == "collectivite_territoriale" ~ "Territorial government",
+    values == "general_budget" ~ "General budget",
+    values == "international_agency" ~ "International agency",
+    values == "public_employees" ~ "Public employees",
+    values == "Missing" ~ "Missing",
+    TRUE ~ values %>%
+      str_replace_all("_", " ") %>%
+      str_to_sentence()
+  )
+}
+
+beneficiary_pair_rows <- SSA_EARMARK_ALLOCATIONS %>%
+  transmute(
+    country = str_trim(country),
+    pair_id = str_trim(pair_id),
+    beneficiary_type = if_else(
+      is.na(beneficiary_type) | str_trim(beneficiary_type) == "",
+      "Missing",
+      str_trim(beneficiary_type)
+    )
+  )
+
+beneficiary_pair_conflicts <- beneficiary_pair_rows %>%
+  group_by(country, pair_id) %>%
+  summarise(
+    n_beneficiary_types = n_distinct(beneficiary_type),
+    beneficiary_values = paste(
+      sort(unique(beneficiary_type)),
+      collapse = "; "
+    ),
+    .groups = "drop"
+  ) %>%
+  filter(n_beneficiary_types > 1L)
+if (nrow(beneficiary_pair_conflicts) > 0L) {
+  stop(
+    "A country + pair_id has conflicting beneficiary_type values: ",
+    paste(
+      paste0(
+        beneficiary_pair_conflicts$country,
+        " + ",
+        beneficiary_pair_conflicts$pair_id,
+        " [",
+        beneficiary_pair_conflicts$beneficiary_values,
+        "]"
+      ),
+      collapse = "; "
+    )
+  )
+}
+
+beneficiary_pairs <- beneficiary_pair_rows %>%
+  distinct(country, pair_id, beneficiary_type)
+if (nrow(beneficiary_pairs) !=
+    nrow(distinct(beneficiary_pairs, country, pair_id))) {
+  stop("Beneficiary allocation pairs are not unique after validation.")
+}
+
+beneficiary_universe <- beneficiary_pairs %>%
+  distinct(beneficiary_type) %>%
+  mutate(
+    beneficiary_label = make_beneficiary_label(beneficiary_type)
+  ) %>%
+  arrange(beneficiary_label, beneficiary_type)
+
+beneficiary_uncoloured <- setdiff(
+  beneficiary_universe$beneficiary_type,
+  names(beneficiary_colours)
+)
+if (length(beneficiary_uncoloured) > 0L) {
+  stop(
+    "Beneficiary categories lack plot colours: ",
+    paste(beneficiary_uncoloured, collapse = "; ")
+  )
+}
+
+beneficiary_country_totals <- beneficiary_pairs %>%
+  count(country, name = "country_total_allocation_pairs")
+beneficiary_country_counts <- beneficiary_pairs %>%
+  count(
+    country,
+    beneficiary_type,
+    name = "n_allocation_pairs"
+  )
+
+beneficiary_country_grid <- crossing(
+  country = country_universe$country,
+  beneficiary_universe
+) %>%
+  left_join(
+    beneficiary_country_counts,
+    by = c("country", "beneficiary_type")
+  ) %>%
+  mutate(n_allocation_pairs = replace_na(n_allocation_pairs, 0L)) %>%
+  left_join(beneficiary_country_totals, by = "country") %>%
+  left_join(
+    sample_coverage %>% select(country, country_name),
+    by = "country"
+  ) %>%
+  mutate(
+    within_country_share =
+      n_allocation_pairs / country_total_allocation_pairs
+  )
+
+beneficiary_country_share_check <- beneficiary_country_grid %>%
+  group_by(country) %>%
+  summarise(
+    share_sum = sum(within_country_share),
+    .groups = "drop"
+  )
+if (any(abs(beneficiary_country_share_check$share_sum - 1) > 1e-10)) {
+  stop("Beneficiary shares do not sum to one within every country.")
+}
+
+beneficiary_equal_country_csv <- beneficiary_country_grid %>%
+  group_by(beneficiary_type, beneficiary_label) %>%
+  summarise(
+    equal_country_average_share = mean(within_country_share),
+    .groups = "drop"
+  ) %>%
+  arrange(
+    desc(equal_country_average_share),
+    beneficiary_label,
+    beneficiary_type
+  ) %>%
+  mutate(
+    plot_order = row_number(),
+    share_label = if_else(
+      equal_country_average_share > 0 &
+        equal_country_average_share < 0.001,
+      percent(equal_country_average_share, accuracy = 0.01),
+      percent(equal_country_average_share, accuracy = 0.1)
+    )
+  ) %>%
+  select(
+    beneficiary_type,
+    beneficiary_label,
+    equal_country_average_share,
+    share_label,
+    plot_order
+  )
+
+if (abs(sum(
+  beneficiary_equal_country_csv$equal_country_average_share
+) - 1) > 1e-10) {
+  stop("Equal-country beneficiary shares do not sum to one.")
+}
+
+beneficiary_country_composition_csv <- beneficiary_country_grid %>%
+  left_join(
+    beneficiary_equal_country_csv %>%
+      select(beneficiary_type, plot_order),
+    by = "beneficiary_type"
+  ) %>%
+  mutate(
+    fill_colour = unname(beneficiary_colours[beneficiary_type])
+  ) %>%
+  select(
+    country,
+    country_name,
+    beneficiary_type,
+    beneficiary_label,
+    plot_order,
+    n_allocation_pairs,
+    country_total_allocation_pairs,
+    within_country_share,
+    fill_colour
+  ) %>%
+  arrange(country_name, plot_order)
+
+if (any(is.na(beneficiary_country_composition_csv$fill_colour))) {
+  stop("A beneficiary category has no assigned plot colour.")
+}
+
+cat(
+  "Beneficiary composition countries:",
+  n_distinct(beneficiary_pairs$country), "\n",
+  "Distinct country + pair_id allocations:", nrow(beneficiary_pairs), "\n",
+  "Beneficiary categories:",
+  paste(beneficiary_universe$beneficiary_type, collapse = "; "), "\n",
+  "Pairs with missing beneficiary_type:",
+  sum(beneficiary_pairs$beneficiary_type == "Missing"), "\n"
+)
+```
+
+## 8.1 Equal-country composition
+
+```{r beneficiary-equal-country-table}
+beneficiary_equal_country_csv
+```
+
+```{r beneficiary-equal-country-plot, fig.width=12, fig.height=7.5}
+beneficiary_overall_levels <- beneficiary_equal_country_csv %>%
+  arrange(equal_country_average_share, beneficiary_label) %>%
+  pull(beneficiary_label)
+
+beneficiary_equal_country_plot <- beneficiary_equal_country_csv %>%
+  mutate(
+    beneficiary_label = factor(
+      beneficiary_label,
+      levels = beneficiary_overall_levels
+    )
+  ) %>%
+  ggplot(
+    aes(
+      x = equal_country_average_share,
+      y = beneficiary_label
+    )
+  ) +
+  geom_col(width = 0.62, fill = main_blue) +
+  geom_text(
+    aes(label = share_label),
+    hjust = -0.12,
+    size = 3,
+    colour = "#333333"
+  ) +
+  scale_x_continuous(
+    labels = label_percent(accuracy = 1),
+    expand = expansion(mult = c(0, 0.14))
+  ) +
+  labs(
+    title = "How statutory allocations are institutionally routed",
+    subtitle = "Average allocation pattern when each country receives equal weight",
+    x = "Equal-country average share of allocation links",
+    y = NULL,
+    caption = paste0(
+      "Note: Each allocation is one distinct statutory allocation channel. ",
+      "Missing beneficiary classifications are shown explicitly."
+    )
+  ) +
+  theme_imf +
+  theme(
+    axis.text.y = element_text(size = 9.6)
+  )
+
+write_plot_csv(
+  beneficiary_equal_country_csv,
+  "04_beneficiary_equal_country"
+)
+save_plot(
+  beneficiary_equal_country_plot,
+  "04_beneficiary_equal_country",
+  width = 12,
+  height = 7.5
+)
+print(beneficiary_equal_country_plot)
+```
+
+## 8.2 Composition by country
+
+```{r beneficiary-country-composition-table}
+beneficiary_country_composition_csv
+```
+
+```{r beneficiary-country-composition-plot, fig.width=15, fig.height=10.5}
+beneficiary_country_levels <- beneficiary_country_composition_csv %>%
+  distinct(country_name) %>%
+  arrange(desc(country_name)) %>%
+  pull(country_name)
+beneficiary_type_levels <- beneficiary_equal_country_csv %>%
+  arrange(plot_order) %>%
+  pull(beneficiary_type)
+beneficiary_type_labels <- beneficiary_equal_country_csv %>%
+  arrange(plot_order) %>%
+  pull(beneficiary_label)
+
+beneficiary_country_composition_plot <-
+  beneficiary_country_composition_csv %>%
+  mutate(
+    country_name = factor(
+      country_name,
+      levels = beneficiary_country_levels
+    ),
+    beneficiary_type = factor(
+      beneficiary_type,
+      levels = beneficiary_type_levels
+    )
+  ) %>%
+  ggplot(
+    aes(
+      x = within_country_share,
+      y = country_name,
+      fill = beneficiary_type
+    )
+  ) +
+  geom_col(
+    width = 0.68,
+    position = position_stack(reverse = TRUE)
+  ) +
+  scale_x_continuous(
+    breaks = c(0, 0.25, 0.50, 0.75, 1),
+    labels = label_percent(accuracy = 1),
+    expand = expansion(mult = c(0, 0))
+  ) +
+  scale_fill_manual(
+    values = beneficiary_colours,
+    breaks = beneficiary_type_levels,
+    labels = beneficiary_type_labels,
+    drop = FALSE,
+    name = "Beneficiary type"
+  ) +
+  labs(
+    title = "Institutional routing of statutory allocations by country",
+    subtitle = "Distribution of allocation channels across recipient types",
+    x = "Share of statutory allocation links within country",
+    y = NULL,
+    caption = paste0(
+      "Note: Each bar sums to 100%. Missing beneficiary classifications are ",
+      "shown explicitly."
+    )
+  ) +
+  theme_imf +
+  theme(
+    axis.text.y = element_text(size = 9.5),
+    legend.position = "bottom",
+    legend.box = "vertical",
+    legend.text = element_text(size = 8.7),
+    panel.grid.major.x = element_line(colour = "#E5E8EB", linewidth = 0.3)
+  ) +
+  guides(fill = guide_legend(ncol = 4, byrow = TRUE))
+
+write_plot_csv(
+  beneficiary_country_composition_csv,
+  "04_beneficiary_country_composition"
+)
+save_plot(
+  beneficiary_country_composition_plot,
+  "04_beneficiary_country_composition",
+  width = 15,
+  height = 10.5
+)
+print(beneficiary_country_composition_plot)
+```
+
+# 9. Output audit
+
+```{r output-audit}
+expected_stems <- c(
+  "04_africa_inventory_map",
+  "04_coverage_timeline",
+  "04_earmark_incidence",
+  "04_base_sector_pooled",
+  "04_base_sector_equal_country",
+  "04_source_destination_bubble_matrix_division",
+  "04_source_destination_heatmap_division",
+  "04_destination_pooled_cofog4",
+  "04_destination_equal_country_cofog4",
+  "04_destination_largest_cofog4",
+  "04_destination_pooled_division",
+  "04_destination_equal_country_division",
+  "04_destination_country_bubble_matrix_division",
+  "04_destination_country_heatmap_division",
+  "04_destination_supplementary_stacked_division",
+  "04_destination_largest_division",
+  "04_beneficiary_equal_country",
+  "04_beneficiary_country_composition"
+)
+
+expected_pngs <- file.path(figure_dir, paste0(expected_stems, ".png"))
+expected_csvs <- file.path(table_dir, paste0(expected_stems, ".csv"))
+if (!all(file.exists(expected_pngs)) || !all(file.exists(expected_csvs))) {
+  stop("One or more requested figure/CSV output pairs were not created.")
+}
+
+cat(
+  "Analysis variant:", analysis_variant, "\n",
+  "Created", length(expected_pngs), "PNG figures and",
+  length(expected_csvs), "matching CSV files.\n",
+  "Countries included:",
+  paste(sort(country_universe$country), collapse = ", "), "\n",
+  "Missing allocation-incidence values retained in CSV:",
+  sum(is.na(incidence_csv$allocation_incidence_E_D)), "\n",
+  "Missing base-sector classifications among linked instruments:",
+  sum(linked_census_instruments$base_sector == "Missing"), "\n",
+  "Unmapped destination-function codes preserved:",
+  nrow(unmapped_function_codes), "\n",
+  "Cross-country linkage problems:", nrow(cross_country_links), "\n",
+  "Expected expanded rows excluded by analytical Census scope:",
+  nrow(scope_excluded_expanded), "\n",
+  "Beneficiary countries:", n_distinct(beneficiary_pairs$country), "\n",
+  "Distinct allocation pairs in beneficiary plots:",
+  nrow(beneficiary_pairs), "\n",
+  "Pairs missing beneficiary_type:",
+  sum(beneficiary_pairs$beneficiary_type == "Missing"), "\n"
+)
+```

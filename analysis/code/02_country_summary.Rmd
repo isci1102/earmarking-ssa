@@ -1,0 +1,867 @@
+---
+title: "SSA revenue instruments: country-level summary indicators"
+author: "IMF research project"
+date: "`r format(Sys.Date(), '%Y-%m-%d')`"
+params:
+  analysis_variant: "full"
+output:
+  html_document:
+    toc: true
+    toc_depth: 3
+    df_print: paged
+---
+
+This notebook computes country-level count indicators from the four prepared derived datasets specified for this task. The database is a **de jure** legal inventory; the indicators do not measure collections, transfers, disbursements, or expenditure execution. No source workbook is opened, no input file is modified, and no plot is created.
+
+The analytical units remain distinct throughout: Census instrument (`country + instrument_id`), Allocation source group (`country + instrument_id`), Allocation pair (`country + pair_id`), evidence row (`country + evidence_id`), and atomic Allocation link (`country + pair_id + census_instrument_id`).
+
+```{r setup, include=FALSE}
+input_path <- knitr::current_input(dir = TRUE)
+project_root <- normalizePath(
+  file.path(dirname(input_path), "..", ".."),
+  winslash = "/",
+  mustWork = TRUE
+)
+
+knitr::opts_knit$set(root.dir = project_root)
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+
+library(dplyr)
+library(tidyr)
+library(purrr)
+library(readr)
+library(stringr)
+library(tibble)
+library(knitr)
+
+options(stringsAsFactors = FALSE, scipen = 999)
+
+analysis_variant <- params$analysis_variant
+allowed_analysis_variants <- c("full", "partial_exclusive")
+if (!analysis_variant %in% allowed_analysis_variants) {
+  stop(
+    "Unknown analysis_variant: ", analysis_variant,
+    ". Expected one of: ", paste(allowed_analysis_variants, collapse = "; ")
+  )
+}
+is_partial_exclusive <- identical(analysis_variant, "partial_exclusive")
+partial_exclusive_statuses <- c("partial_earmark", "exclusive_earmark")
+
+analysis_table_dir <- file.path(project_root, "analysis", "tables")
+if (is_partial_exclusive) {
+  analysis_table_dir <- file.path(analysis_table_dir, "partial_exclusive")
+}
+
+input_paths <- c(
+  SSA_CENSUS_STACKED = file.path(
+    project_root, "data", "derived", "SSA_CENSUS_STACKED.csv"
+  ),
+  SSA_CENSUS = file.path(
+    project_root, "data", "derived", "SSA_CENSUS.csv"
+  ),
+  SSA_EARMARK_ALLOCATIONS = file.path(
+    project_root, "data", "derived", "SSA_EARMARK_ALLOCATIONS.csv"
+  ),
+  SSA_EARMARK_ALLOCATIONS_EXPANDED = file.path(
+    project_root,
+    "data",
+    "derived",
+    "SSA_EARMARK_ALLOCATIONS_EXPANDED.csv"
+  )
+)
+
+output_path <- file.path(
+  analysis_table_dir, "02_country_summary.csv"
+)
+dir.create(dirname(output_path), recursive = TRUE, showWarnings = FALSE)
+
+output_columns <- c(
+  "country",
+  "D_all_census_instruments",
+  "D_census_instruments",
+  "E_all_linked_census_instruments",
+  "E_linked_census_instruments",
+  "A_allocation_source_groups",
+  "P_allocation_pairs",
+  "L_atomic_allocation_links",
+  "R_evidence_rows",
+  "allocation_incidence_E_D",
+  "allocation_link_density_L_E",
+  "pairs_per_source_group_P_A",
+  "unlinked_census_instruments_D_minus_E",
+  "allocation_scope",
+  "census_scope"
+)
+
+is_missing_id <- function(values) {
+  if (is.character(values)) {
+    is.na(values) | str_trim(values) == ""
+  } else {
+    is.na(values)
+  }
+}
+
+safe_ratio <- function(numerator, denominator) {
+  if_else(denominator == 0L, NA_real_, numerator / denominator)
+}
+
+display_table <- function(data, digits = 6) {
+  if (nrow(data) == 0L) {
+    cat("No rows to report.\n")
+  } else {
+    knitr::kable(data, digits = digits, row.names = FALSE)
+  }
+}
+```
+
+# 1. Load and validate the four derived datasets
+
+Only the four declared CSV files are read. Identifier fields are imported as text; the already-derived binary and level flags used for scope checks are imported as integers.
+
+```{r load-derived-data}
+missing_input_files <- names(input_paths)[!file.exists(input_paths)]
+if (length(missing_input_files) > 0L) {
+  stop(
+    "Missing required derived input files: ",
+    paste(missing_input_files, collapse = "; ")
+  )
+}
+
+SSA_CENSUS_STACKED <- read_csv(
+  input_paths[["SSA_CENSUS_STACKED"]],
+  col_types = cols(
+    .default = col_character(),
+    in_force = col_integer(),
+    is_penalty = col_integer(),
+    is_earmarked = col_integer()
+  ),
+  show_col_types = FALSE,
+  progress = FALSE
+)
+
+SSA_CENSUS <- read_csv(
+  input_paths[["SSA_CENSUS"]],
+  col_types = cols(
+    .default = col_character(),
+    in_force = col_integer(),
+    is_penalty = col_integer(),
+    is_earmarked = col_integer()
+  ),
+  show_col_types = FALSE,
+  progress = FALSE
+)
+
+SSA_EARMARK_ALLOCATIONS <- read_csv(
+  input_paths[["SSA_EARMARK_ALLOCATIONS"]],
+  col_types = cols(
+    .default = col_character(),
+    share_level = col_integer()
+  ),
+  show_col_types = FALSE,
+  progress = FALSE
+)
+
+SSA_EARMARK_ALLOCATIONS_EXPANDED <- read_csv(
+  input_paths[["SSA_EARMARK_ALLOCATIONS_EXPANDED"]],
+  col_types = cols(
+    .default = col_character(),
+    share_level = col_integer()
+  ),
+  show_col_types = FALSE,
+  progress = FALSE
+)
+
+required_fields <- list(
+  SSA_CENSUS_STACKED = c("country", "instrument_id"),
+  SSA_CENSUS = c(
+    "country", "instrument_id", "in_force", "is_penalty", "is_earmarked"
+  ),
+  SSA_EARMARK_ALLOCATIONS = c(
+    "country", "instrument_id", "pair_id", "evidence_id", "share_level",
+    if (is_partial_exclusive) "earmark_status"
+  ),
+  SSA_EARMARK_ALLOCATIONS_EXPANDED = c(
+    "country", "pair_id", "census_instrument_id", "census_evidence_id",
+    "share_level", if (is_partial_exclusive) "earmark_status"
+  )
+)
+
+input_objects <- list(
+  SSA_CENSUS_STACKED = SSA_CENSUS_STACKED,
+  SSA_CENSUS = SSA_CENSUS,
+  SSA_EARMARK_ALLOCATIONS = SSA_EARMARK_ALLOCATIONS,
+  SSA_EARMARK_ALLOCATIONS_EXPANDED = SSA_EARMARK_ALLOCATIONS_EXPANDED
+)
+
+input_inventory <- imap_dfr(input_objects, function(data, dataset) {
+  missing_fields <- setdiff(required_fields[[dataset]], names(data))
+  tibble(
+    dataset = dataset,
+    file = basename(input_paths[[dataset]]),
+    n_rows = nrow(data),
+    n_columns = ncol(data),
+    n_countries = n_distinct(
+      data$country[!is_missing_id(data$country)]
+    ),
+    missing_required_fields = if (length(missing_fields) == 0L) {
+      NA_character_
+    } else {
+      paste(missing_fields, collapse = "; ")
+    },
+    schema_status = if_else(
+      length(missing_fields) == 0L, "valid", "invalid"
+    )
+  )
+})
+
+if (any(input_inventory$schema_status == "invalid")) {
+  print(input_inventory)
+  stop("At least one derived input is missing required fields.")
+}
+
+SSA_EARMARK_ALLOCATIONS_UNFILTERED <- SSA_EARMARK_ALLOCATIONS
+SSA_EARMARK_ALLOCATIONS_EXPANDED_UNFILTERED <-
+  SSA_EARMARK_ALLOCATIONS_EXPANDED
+
+if (is_partial_exclusive) {
+  allocation_status_problems <- bind_rows(
+    SSA_EARMARK_ALLOCATIONS_UNFILTERED %>%
+      filter(
+        is_missing_id(earmark_status) |
+          !earmark_status %in% c(
+            "assigned_unrestricted", "cost_recovery_only",
+            "partial_earmark", "exclusive_earmark"
+          )
+      ) %>%
+      transmute(dataset = "SSA_EARMARK_ALLOCATIONS", country, instrument_id,
+                earmark_status),
+    SSA_EARMARK_ALLOCATIONS_EXPANDED_UNFILTERED %>%
+      filter(
+        is_missing_id(earmark_status) |
+          !earmark_status %in% c(
+            "assigned_unrestricted", "cost_recovery_only",
+            "partial_earmark", "exclusive_earmark"
+          )
+      ) %>%
+      transmute(
+        dataset = "SSA_EARMARK_ALLOCATIONS_EXPANDED",
+        country, instrument_id, earmark_status
+      )
+  )
+
+  allocation_status_map <- SSA_EARMARK_ALLOCATIONS_UNFILTERED %>%
+    filter(!is_missing_id(country), !is_missing_id(instrument_id)) %>%
+    distinct(country, instrument_id, earmark_status)
+  expanded_status_map <- SSA_EARMARK_ALLOCATIONS_EXPANDED_UNFILTERED %>%
+    filter(!is_missing_id(country), !is_missing_id(instrument_id)) %>%
+    distinct(country, instrument_id, earmark_status)
+
+  status_key_conflicts <- bind_rows(
+    allocation_status_map %>%
+      count(country, instrument_id, name = "n_statuses") %>%
+      filter(n_statuses != 1L) %>%
+      mutate(dataset = "SSA_EARMARK_ALLOCATIONS", .before = 1),
+    expanded_status_map %>%
+      count(country, instrument_id, name = "n_statuses") %>%
+      filter(n_statuses != 1L) %>%
+      mutate(dataset = "SSA_EARMARK_ALLOCATIONS_EXPANDED", .before = 1)
+  )
+  expanded_status_mismatches <- expanded_status_map %>%
+    anti_join(
+      allocation_status_map,
+      by = c("country", "instrument_id", "earmark_status")
+    )
+
+  if (nrow(allocation_status_problems) > 0L ||
+      nrow(status_key_conflicts) > 0L ||
+      nrow(expanded_status_mismatches) > 0L) {
+    print(allocation_status_problems)
+    print(status_key_conflicts)
+    print(expanded_status_mismatches)
+    stop("Allocation earmark_status validation failed before filtering.")
+  }
+
+  SSA_EARMARK_ALLOCATIONS <- SSA_EARMARK_ALLOCATIONS_UNFILTERED %>%
+    filter(earmark_status %in% partial_exclusive_statuses)
+  SSA_EARMARK_ALLOCATIONS_EXPANDED <-
+    SSA_EARMARK_ALLOCATIONS_EXPANDED_UNFILTERED %>%
+    filter(earmark_status %in% partial_exclusive_statuses)
+}
+
+analysis_filter_audit <- tribble(
+  ~dataset, ~measure, ~before, ~after,
+  "SSA_EARMARK_ALLOCATIONS", "rows",
+  nrow(SSA_EARMARK_ALLOCATIONS_UNFILTERED),
+  nrow(SSA_EARMARK_ALLOCATIONS),
+  "SSA_EARMARK_ALLOCATIONS", "distinct country + pair_id",
+  nrow(distinct(
+    SSA_EARMARK_ALLOCATIONS_UNFILTERED, country, pair_id
+  )),
+  nrow(distinct(SSA_EARMARK_ALLOCATIONS, country, pair_id)),
+  "SSA_EARMARK_ALLOCATIONS_EXPANDED", "expanded links",
+  nrow(SSA_EARMARK_ALLOCATIONS_EXPANDED_UNFILTERED),
+  nrow(SSA_EARMARK_ALLOCATIONS_EXPANDED)
+)
+
+filtered_status_distribution <- SSA_EARMARK_ALLOCATIONS %>%
+  distinct(country, instrument_id, earmark_status) %>%
+  count(earmark_status, name = "n_allocation_source_instruments") %>%
+  arrange(earmark_status)
+
+filtered_countries <- SSA_EARMARK_ALLOCATIONS %>%
+  distinct(country) %>%
+  arrange(country)
+
+if (is_partial_exclusive &&
+    (!all(SSA_EARMARK_ALLOCATIONS$earmark_status %in%
+          partial_exclusive_statuses) ||
+     !all(SSA_EARMARK_ALLOCATIONS_EXPANDED$earmark_status %in%
+          partial_exclusive_statuses))) {
+  stop("A non-partial/non-exclusive status remains after filtering.")
+}
+
+# Subsequent inventory and coverage checks describe the active analysis objects.
+input_objects <- list(
+  SSA_CENSUS_STACKED = SSA_CENSUS_STACKED,
+  SSA_CENSUS = SSA_CENSUS,
+  SSA_EARMARK_ALLOCATIONS = SSA_EARMARK_ALLOCATIONS,
+  SSA_EARMARK_ALLOCATIONS_EXPANDED = SSA_EARMARK_ALLOCATIONS_EXPANDED
+)
+```
+
+## Allocation-status filter audit
+
+```{r display-analysis-filter-audit}
+display_table(analysis_filter_audit)
+display_table(filtered_status_distribution)
+cat(
+  "Countries remaining in the allocation sample (", nrow(filtered_countries),
+  "): ", paste(filtered_countries$country, collapse = ", "), ".\n",
+  "Only partial_earmark and exclusive_earmark present: ",
+  if_else(
+    all(SSA_EARMARK_ALLOCATIONS$earmark_status %in%
+        partial_exclusive_statuses) &&
+      all(SSA_EARMARK_ALLOCATIONS_EXPANDED$earmark_status %in%
+          partial_exclusive_statuses),
+    "yes", "no"
+  ), ".\n",
+  sep = ""
+)
+```
+
+The prepared analytical scopes are verified rather than re-filtered. A scope violation is a hard stop because silently filtering it here would impose an unreported additional transformation.
+
+```{r verify-input-scopes}
+scope_audit <- tribble(
+  ~dataset, ~declared_scope, ~n_rows, ~n_scope_violations,
+  "SSA_CENSUS",
+  "in_force == 1 and is_penalty == 0",
+  nrow(SSA_CENSUS),
+  sum(
+    is.na(SSA_CENSUS$in_force) |
+      is.na(SSA_CENSUS$is_penalty) |
+      SSA_CENSUS$in_force != 1L |
+      SSA_CENSUS$is_penalty != 0L
+  ),
+  "SSA_EARMARK_ALLOCATIONS",
+  "share_level == 1",
+  nrow(SSA_EARMARK_ALLOCATIONS),
+  sum(
+    is.na(SSA_EARMARK_ALLOCATIONS$share_level) |
+      SSA_EARMARK_ALLOCATIONS$share_level != 1L
+  ),
+  "SSA_EARMARK_ALLOCATIONS_EXPANDED",
+  "share_level == 1",
+  nrow(SSA_EARMARK_ALLOCATIONS_EXPANDED),
+  sum(
+    is.na(SSA_EARMARK_ALLOCATIONS_EXPANDED$share_level) |
+      SSA_EARMARK_ALLOCATIONS_EXPANDED$share_level != 1L
+  )
+) %>%
+  mutate(scope_status = if_else(
+    n_scope_violations == 0L, "valid", "violation"
+  ))
+
+if (any(scope_audit$n_scope_violations > 0L)) {
+  print(scope_audit)
+  stop(
+    "A derived input violates its declared analytical scope; no additional ",
+    "filter was applied and no output was written."
+  )
+}
+
+country_coverage <- reduce(
+  imap(input_objects, function(data, dataset) {
+    data %>%
+      filter(!is_missing_id(country)) %>%
+      distinct(country) %>%
+      mutate(!!dataset := TRUE)
+  }),
+  full_join,
+  by = "country"
+) %>%
+  mutate(across(-country, ~ replace_na(.x, FALSE))) %>%
+  arrange(country)
+```
+
+## Input inventory
+
+```{r display-input-inventory}
+display_table(input_inventory)
+```
+
+## Scope audit
+
+```{r display-scope-audit}
+display_table(scope_audit)
+```
+
+## Country coverage
+
+```{r display-country-coverage}
+display_table(country_coverage)
+```
+
+# 2. Missing identifiers
+
+Missingness is reported for every identifier used in the requested counts or joins. Source values are not filled or corrected.
+
+```{r missing-id-audit}
+make_missing_id_report <- function(data, dataset, id_fields) {
+  country_rows <- data %>%
+    mutate(country_scope = if_else(
+      is_missing_id(country), "Missing_country", country
+    )) %>%
+    select(country_scope, all_of(id_fields)) %>%
+    pivot_longer(
+      cols = all_of(id_fields),
+      names_to = "id_field",
+      values_to = "id_value",
+      values_transform = list(id_value = as.character)
+    ) %>%
+    group_by(country = country_scope, id_field) %>%
+    summarise(
+      n_rows = n(),
+      n_missing_id_rows = sum(is_missing_id(id_value)),
+      pct_missing = n_missing_id_rows / n_rows,
+      .groups = "drop"
+    )
+
+  overall_rows <- data %>%
+    select(all_of(id_fields)) %>%
+    pivot_longer(
+      cols = everything(),
+      names_to = "id_field",
+      values_to = "id_value",
+      values_transform = list(id_value = as.character)
+    ) %>%
+    group_by(id_field) %>%
+    summarise(
+      country = "Overall",
+      n_rows = n(),
+      n_missing_id_rows = sum(is_missing_id(id_value)),
+      pct_missing = n_missing_id_rows / n_rows,
+      .groups = "drop"
+    ) %>%
+    select(country, everything())
+
+  bind_rows(overall_rows, country_rows) %>%
+    mutate(dataset = dataset, .before = 1) %>%
+    arrange(id_field, country != "Overall", country)
+}
+
+missing_id_report <- bind_rows(
+  make_missing_id_report(
+    SSA_CENSUS_STACKED,
+    "SSA_CENSUS_STACKED",
+    c("country", "instrument_id")
+  ),
+  make_missing_id_report(
+    SSA_CENSUS,
+    "SSA_CENSUS",
+    c("country", "instrument_id")
+  ),
+  make_missing_id_report(
+    SSA_EARMARK_ALLOCATIONS,
+    "SSA_EARMARK_ALLOCATIONS",
+    c("country", "instrument_id", "pair_id", "evidence_id")
+  ),
+  make_missing_id_report(
+    SSA_EARMARK_ALLOCATIONS_EXPANDED,
+    "SSA_EARMARK_ALLOCATIONS_EXPANDED",
+    c("country", "pair_id", "census_instrument_id", "census_evidence_id")
+  )
+)
+```
+
+```{r display-missing-id-audit}
+display_table(missing_id_report)
+```
+
+# 3. Country-level counts
+
+No instrument-type restriction is applied. Allocation inputs are used at their prepared level-1 scope, and no allocation level is mixed with another.
+
+```{r compute-count-components}
+country_universe <- bind_rows(
+  SSA_CENSUS_STACKED %>% select(country),
+  SSA_CENSUS %>% select(country),
+  SSA_EARMARK_ALLOCATIONS %>% select(country),
+  SSA_EARMARK_ALLOCATIONS_EXPANDED %>% select(country)
+) %>%
+  filter(!is_missing_id(country)) %>%
+  distinct(country) %>%
+  arrange(country)
+
+D_all_counts <- SSA_CENSUS_STACKED %>%
+  filter(
+    !is_missing_id(country),
+    !is_missing_id(instrument_id)
+  ) %>%
+  distinct(country, instrument_id) %>%
+  count(country, name = "D_all_census_instruments")
+
+D_counts <- SSA_CENSUS %>%
+  filter(
+    !is_missing_id(country),
+    !is_missing_id(instrument_id)
+  ) %>%
+  distinct(country, instrument_id) %>%
+  count(country, name = "D_census_instruments")
+
+E_all_counts <- SSA_EARMARK_ALLOCATIONS_EXPANDED %>%
+  filter(
+    !is_missing_id(country),
+    !is_missing_id(census_instrument_id)
+  ) %>%
+  distinct(country, census_instrument_id) %>%
+  count(country, name = "E_all_linked_census_instruments")
+
+E_counts <- if (is_partial_exclusive) {
+  analytical_census_keys_for_e <- SSA_CENSUS %>%
+    filter(
+      !is_missing_id(country),
+      !is_missing_id(instrument_id)
+    ) %>%
+    distinct(country, census_instrument_id = instrument_id)
+
+  SSA_EARMARK_ALLOCATIONS_EXPANDED %>%
+    filter(
+      !is_missing_id(country),
+      !is_missing_id(census_instrument_id)
+    ) %>%
+    distinct(country, census_instrument_id) %>%
+    semi_join(
+      analytical_census_keys_for_e,
+      by = c("country", "census_instrument_id")
+    ) %>%
+    count(country, name = "E_linked_census_instruments")
+} else {
+  SSA_CENSUS %>%
+    filter(
+      is_earmarked == 1L,
+      !is_missing_id(country),
+      !is_missing_id(instrument_id)
+    ) %>%
+    distinct(country, instrument_id) %>%
+    count(country, name = "E_linked_census_instruments")
+}
+
+A_counts <- SSA_EARMARK_ALLOCATIONS %>%
+  filter(
+    !is_missing_id(country),
+    !is_missing_id(instrument_id)
+  ) %>%
+  distinct(country, instrument_id) %>%
+  count(country, name = "A_allocation_source_groups")
+
+P_counts <- SSA_EARMARK_ALLOCATIONS %>%
+  filter(
+    !is_missing_id(country),
+    !is_missing_id(pair_id)
+  ) %>%
+  distinct(country, pair_id) %>%
+  count(country, name = "P_allocation_pairs")
+
+R_counts <- SSA_EARMARK_ALLOCATIONS %>%
+  filter(
+    !is_missing_id(country),
+    !is_missing_id(evidence_id)
+  ) %>%
+  distinct(country, evidence_id) %>%
+  count(country, name = "R_evidence_rows")
+```
+
+`L_atomic_allocation_links` is the only requested count that applies a join-time restriction. The expanded link table is restricted to `country + census_instrument_id` values that appear as `country + instrument_id` in the analytical Census. The link grain is made explicit with `distinct(country, pair_id, census_instrument_id)`.
+
+The prior stacking audit removed six repeated link rows across four Allocation pairs (`BEN_PAIR_0001`, `CIV_PAIR_0090`, `CIV_PAIR_0091`, and `GIN_PAIR_0039`) and retained the first source occurrence. This notebook treats the resulting expanded dataset as authoritative and does not reconstruct those rows from `census_ref`. Re-applying the distinct atomic-link key prevents duplication, while the retained allocation attributes do not enter any indicator requested here.
+
+```{r compute-atomic-links}
+analytical_census_keys <- SSA_CENSUS %>%
+  filter(
+    !is_missing_id(country),
+    !is_missing_id(instrument_id)
+  ) %>%
+  distinct(country, census_instrument_id = instrument_id)
+
+all_atomic_links <- SSA_EARMARK_ALLOCATIONS_EXPANDED %>%
+  filter(
+    !is_missing_id(country),
+    !is_missing_id(pair_id),
+    !is_missing_id(census_instrument_id)
+  ) %>%
+  distinct(country, pair_id, census_instrument_id)
+
+analytical_atomic_links <- all_atomic_links %>%
+  semi_join(
+    analytical_census_keys,
+    by = c("country", "census_instrument_id")
+  ) %>%
+  distinct(country, pair_id, census_instrument_id)
+
+L_counts <- analytical_atomic_links %>%
+  count(country, name = "L_atomic_allocation_links")
+
+make_link_filter_audit <- function(country_value) {
+  expanded_scope <- if (country_value == "Overall") {
+    SSA_EARMARK_ALLOCATIONS_EXPANDED
+  } else {
+    SSA_EARMARK_ALLOCATIONS_EXPANDED %>% filter(country == country_value)
+  }
+  all_link_scope <- if (country_value == "Overall") {
+    all_atomic_links
+  } else {
+    all_atomic_links %>% filter(country == country_value)
+  }
+  analytical_link_scope <- if (country_value == "Overall") {
+    analytical_atomic_links
+  } else {
+    analytical_atomic_links %>% filter(country == country_value)
+  }
+
+  tibble(
+    country = country_value,
+    condition = paste0(
+      "Keep links whose country + census_instrument_id appears in SSA_CENSUS"
+    ),
+    expanded_rows_before = nrow(expanded_scope),
+    atomic_links_before = nrow(all_link_scope),
+    atomic_links_after = nrow(analytical_link_scope),
+    atomic_links_excluded = nrow(all_link_scope) - nrow(analytical_link_scope)
+  )
+}
+
+link_filter_audit <- map_dfr(
+  c(country_universe$country, "Overall"),
+  make_link_filter_audit
+) %>%
+  arrange(country != "Overall", country)
+```
+
+```{r display-link-filter-audit}
+display_table(link_filter_audit)
+```
+
+# 4. Ratios and final country table
+
+```{r construct-country-summary}
+country_summary <- country_universe %>%
+  left_join(D_all_counts, by = "country") %>%
+  left_join(D_counts, by = "country") %>%
+  left_join(E_all_counts, by = "country") %>%
+  left_join(E_counts, by = "country") %>%
+  left_join(A_counts, by = "country") %>%
+  left_join(P_counts, by = "country") %>%
+  left_join(L_counts, by = "country") %>%
+  left_join(R_counts, by = "country") %>%
+  mutate(
+    across(
+      c(
+        D_all_census_instruments,
+        D_census_instruments,
+        E_all_linked_census_instruments,
+        E_linked_census_instruments,
+        A_allocation_source_groups,
+        P_allocation_pairs,
+        L_atomic_allocation_links,
+        R_evidence_rows
+      ),
+      ~ replace_na(as.integer(.x), 0L)
+    ),
+    allocation_incidence_E_D = safe_ratio(
+      E_linked_census_instruments,
+      D_census_instruments
+    ),
+    allocation_link_density_L_E = safe_ratio(
+      L_atomic_allocation_links,
+      E_linked_census_instruments
+    ),
+    pairs_per_source_group_P_A = safe_ratio(
+      P_allocation_pairs,
+      A_allocation_source_groups
+    ),
+    unlinked_census_instruments_D_minus_E =
+      D_census_instruments - E_linked_census_instruments,
+    allocation_scope = "share_level_1",
+    census_scope = "in_force_1_non_penalty"
+  ) %>%
+  select(all_of(output_columns)) %>%
+  arrange(country)
+
+stopifnot(
+  identical(names(country_summary), output_columns),
+  !any(duplicated(country_summary$country)),
+  !any(is.infinite(country_summary$allocation_incidence_E_D)),
+  !any(is.infinite(country_summary$allocation_link_density_L_E)),
+  !any(is.infinite(country_summary$pairs_per_source_group_P_A))
+)
+```
+
+## Final country-level indicators
+
+```{r display-country-summary}
+display_table(country_summary)
+```
+
+# 5. Validation inequalities
+
+The four requested inequalities are evaluated country by country. Violations are reported but the computed values are never corrected.
+
+```{r validation-checks}
+validation_checks <- bind_rows(
+  country_summary %>%
+    transmute(
+      country,
+      check = "E_all <= D_all",
+      left_value = E_all_linked_census_instruments,
+      operator = "<=",
+      right_value = D_all_census_instruments,
+      passed = left_value <= right_value
+    ),
+  country_summary %>%
+    transmute(
+      country,
+      check = "E <= D",
+      left_value = E_linked_census_instruments,
+      operator = "<=",
+      right_value = D_census_instruments,
+      passed = left_value <= right_value
+    ),
+  country_summary %>%
+    transmute(
+      country,
+      check = "L >= E",
+      left_value = L_atomic_allocation_links,
+      operator = ">=",
+      right_value = E_linked_census_instruments,
+      passed = left_value >= right_value
+    ),
+  country_summary %>%
+    transmute(
+      country,
+      check = "P >= A",
+      left_value = P_allocation_pairs,
+      operator = ">=",
+      right_value = A_allocation_source_groups,
+      passed = left_value >= right_value
+    )
+) %>%
+  mutate(validation_status = if_else(passed, "passed", "violation")) %>%
+  arrange(country, check)
+
+validation_violations <- validation_checks %>%
+  filter(!passed)
+
+validation_summary <- validation_checks %>%
+  group_by(check) %>%
+  summarise(
+    n_countries_checked = n(),
+    n_passed = sum(passed),
+    n_violations = sum(!passed),
+    violating_countries = {
+      values <- country[!passed]
+      if (length(values) == 0L) NA_character_ else paste(values, collapse = "; ")
+    },
+    .groups = "drop"
+  )
+```
+
+## Validation summary
+
+```{r display-validation-summary}
+display_table(validation_summary)
+```
+
+## Validation violations
+
+```{r display-validation-violations}
+display_table(validation_violations)
+```
+
+# 6. Export and verify
+
+```{r export-country-summary}
+write_csv(country_summary, output_path, na = "")
+
+saved_country_summary <- read_csv(
+  output_path,
+  col_types = cols(
+    country = col_character(),
+    D_all_census_instruments = col_integer(),
+    D_census_instruments = col_integer(),
+    E_all_linked_census_instruments = col_integer(),
+    E_linked_census_instruments = col_integer(),
+    A_allocation_source_groups = col_integer(),
+    P_allocation_pairs = col_integer(),
+    L_atomic_allocation_links = col_integer(),
+    R_evidence_rows = col_integer(),
+    allocation_incidence_E_D = col_double(),
+    allocation_link_density_L_E = col_double(),
+    pairs_per_source_group_P_A = col_double(),
+    unlinked_census_instruments_D_minus_E = col_integer(),
+    allocation_scope = col_character(),
+    census_scope = col_character()
+  ),
+  show_col_types = FALSE,
+  progress = FALSE
+)
+
+stopifnot(
+  nrow(saved_country_summary) == nrow(country_summary),
+  identical(names(saved_country_summary), output_columns),
+  isTRUE(all.equal(
+    saved_country_summary,
+    country_summary,
+    check.attributes = FALSE,
+    tolerance = 1e-12
+  ))
+)
+```
+
+# 7. Run summary
+
+```{r run-summary, results='asis'}
+overall_missing_ids <- missing_id_report %>%
+  filter(country == "Overall") %>%
+  summarise(n = sum(n_missing_id_rows)) %>%
+  pull(n)
+
+cat(
+  "- Analysis variant: ", analysis_variant, ".\n",
+  "- Countries included (", nrow(country_summary), "): ",
+  paste(country_summary$country, collapse = ", "), ".\n",
+  "- Missing identifier rows across the requested key fields: ",
+  overall_missing_ids, ".\n",
+  "- Validation violations: ", nrow(validation_violations), ".\n",
+  "- Atomic expanded links before the analytical Census restriction: ",
+  nrow(all_atomic_links), "; after restriction: ",
+  nrow(analytical_atomic_links), ".\n",
+  "- Output: ",
+  if_else(
+    is_partial_exclusive,
+    "analysis/tables/partial_exclusive/02_country_summary.csv",
+    "analysis/tables/02_country_summary.csv"
+  ), ".\n",
+  sep = ""
+)
+```

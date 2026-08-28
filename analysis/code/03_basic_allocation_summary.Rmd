@@ -1,0 +1,1177 @@
+---
+title: "SSA revenue instruments: basic allocation summary"
+author: "IMF research project"
+date: "`r format(Sys.Date(), '%Y-%m-%d')`"
+params:
+  analysis_variant: "full"
+output:
+  html_document:
+    toc: true
+    toc_depth: 3
+    df_print: paged
+---
+
+This notebook summarizes the canonical level-1 statutory allocation layer. The database is a **de jure** legal inventory; it does not measure actual collections, transfers, disbursements, or expenditure execution. The analytical scope is selected once in setup and audited below; no additional downstream restriction is imposed, and no plot is created.
+
+All allocation-composition statistics use one distinct `country + pair_id` from `SSA_EARMARK_ALLOCATIONS.csv`. The expanded link table is loaded only for input context and is never counted as allocations.
+
+```{r setup, include=FALSE}
+input_path <- knitr::current_input(dir = TRUE)
+project_root <- normalizePath(
+  file.path(dirname(input_path), "..", ".."),
+  winslash = "/",
+  mustWork = TRUE
+)
+
+knitr::opts_knit$set(root.dir = project_root)
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+
+library(dplyr)
+library(tidyr)
+library(purrr)
+library(readr)
+library(stringr)
+library(tibble)
+library(knitr)
+
+options(stringsAsFactors = FALSE, scipen = 999)
+
+analysis_variant <- params$analysis_variant
+allowed_analysis_variants <- c("full", "partial_exclusive")
+if (!analysis_variant %in% allowed_analysis_variants) {
+  stop(
+    "Unknown analysis_variant: ", analysis_variant,
+    ". Expected one of: ", paste(allowed_analysis_variants, collapse = "; ")
+  )
+}
+is_partial_exclusive <- identical(analysis_variant, "partial_exclusive")
+partial_exclusive_statuses <- c("partial_earmark", "exclusive_earmark")
+
+analysis_table_dir <- file.path(project_root, "analysis", "tables")
+if (is_partial_exclusive) {
+  analysis_table_dir <- file.path(analysis_table_dir, "partial_exclusive")
+}
+
+input_paths <- c(
+  SSA_CENSUS = file.path(
+    project_root, "data", "derived", "SSA_CENSUS.csv"
+  ),
+  SSA_EARMARK_ALLOCATIONS = file.path(
+    project_root, "data", "derived", "SSA_EARMARK_ALLOCATIONS.csv"
+  ),
+  SSA_EARMARK_ALLOCATIONS_EXPANDED = file.path(
+    project_root,
+    "data",
+    "derived",
+    "SSA_EARMARK_ALLOCATIONS_EXPANDED.csv"
+  ),
+  COFOG_GFSM2014_mapping = file.path(
+    project_root, "data", "COFOG_GFSM2014_mapping.csv"
+  )
+)
+
+output_paths <- c(
+  assignment_type = file.path(
+    analysis_table_dir, "03_assignment_type_summary.csv"
+  ),
+  allocation_nature = file.path(
+    analysis_table_dir, "03_allocation_nature_summary.csv"
+  ),
+  purpose_restriction = file.path(
+    analysis_table_dir,
+    "03_purpose_restriction_summary.csv"
+  ),
+  beneficiary_type = file.path(
+    analysis_table_dir, "03_beneficiary_type_summary.csv"
+  ),
+  destination_function_long = file.path(
+    analysis_table_dir,
+    "03_destination_function_long.csv"
+  ),
+  destination_function_summary = file.path(
+    analysis_table_dir,
+    "03_destination_function_summary.csv"
+  )
+)
+
+dir.create(
+  analysis_table_dir,
+  recursive = TRUE,
+  showWarnings = FALSE
+)
+
+is_missing_value <- function(values) {
+  is.na(values) | str_trim(as.character(values)) == ""
+}
+
+normalize_category <- function(values) {
+  normalized <- str_trim(as.character(values))
+  if_else(is.na(normalized) | normalized == "", "Missing", normalized)
+}
+
+display_table <- function(data, digits = 6) {
+  if (nrow(data) == 0L) {
+    cat("No rows to report.\n")
+  } else {
+    knitr::kable(data, digits = digits, row.names = FALSE)
+  }
+}
+
+make_composition_summary <- function(
+  pair_categories,
+  country_universe,
+  country_pair_totals
+) {
+  observed_categories <- pair_categories %>%
+    distinct(category) %>%
+    arrange(category)
+
+  country_category_counts <- pair_categories %>%
+    count(country, category, name = "n_allocations")
+
+  country_category_grid <- crossing(
+    country = country_universe$country,
+    category = observed_categories$category
+  ) %>%
+    left_join(
+      country_category_counts,
+      by = c("country", "category")
+    ) %>%
+    mutate(n_allocations = replace_na(n_allocations, 0L)) %>%
+    left_join(country_pair_totals, by = "country") %>%
+    mutate(within_country_share = if_else(
+      total_allocations > 0L,
+      n_allocations / total_allocations,
+      NA_real_
+    ))
+
+  summary_table <- country_category_grid %>%
+    group_by(category) %>%
+    summarise(
+      pooled_n_allocations = sum(n_allocations),
+      n_countries_using = sum(n_allocations > 0L),
+      median_allocations_among_users = median(
+        n_allocations[n_allocations > 0L]
+      ),
+      mean_within_country_share = mean(within_country_share),
+      .groups = "drop"
+    ) %>%
+    arrange(desc(pooled_n_allocations), category)
+
+  list(
+    summary = summary_table,
+    country_category_grid = country_category_grid
+  )
+}
+```
+
+# 1. Load and validate the four declared inputs
+
+The COFOG/GFSM mapping is semicolon-delimited. Inspection identifies `cofog_code` as its code column and `cofog_name` as its function-label column.
+
+```{r load-inputs}
+missing_input_files <- names(input_paths)[!file.exists(input_paths)]
+if (length(missing_input_files) > 0L) {
+  stop(
+    "Missing required input files: ",
+    paste(missing_input_files, collapse = "; ")
+  )
+}
+
+SSA_CENSUS <- read_csv(
+  input_paths[["SSA_CENSUS"]],
+  col_types = cols(.default = col_character()),
+  show_col_types = FALSE,
+  progress = FALSE
+)
+
+SSA_EARMARK_ALLOCATIONS <- read_csv(
+  input_paths[["SSA_EARMARK_ALLOCATIONS"]],
+  col_types = cols(.default = col_character()),
+  show_col_types = FALSE,
+  progress = FALSE
+)
+
+SSA_EARMARK_ALLOCATIONS_EXPANDED <- read_csv(
+  input_paths[["SSA_EARMARK_ALLOCATIONS_EXPANDED"]],
+  col_types = cols(.default = col_character()),
+  show_col_types = FALSE,
+  progress = FALSE
+)
+
+COFOG_GFSM2014_mapping <- read_delim(
+  input_paths[["COFOG_GFSM2014_mapping"]],
+  delim = ";",
+  col_types = cols(.default = col_character()),
+  show_col_types = FALSE,
+  progress = FALSE,
+  trim_ws = FALSE
+)
+
+required_fields <- list(
+  SSA_CENSUS = c("country", "instrument_id"),
+  SSA_EARMARK_ALLOCATIONS = c(
+    "country",
+    "pair_id",
+    "row_type",
+    "share_level",
+    "assignment_type",
+    "allocation_nature",
+    "is_purpose_restricted",
+    "beneficiary_type",
+    "destination_function",
+    "destination_function_detail",
+    if (is_partial_exclusive) "earmark_status"
+  ),
+  SSA_EARMARK_ALLOCATIONS_EXPANDED = c(
+    "country", "instrument_id", "pair_id", "census_instrument_id",
+    if (is_partial_exclusive) "earmark_status"
+  ),
+  COFOG_GFSM2014_mapping = c("cofog_code", "cofog_name")
+)
+
+input_objects <- list(
+  SSA_CENSUS = SSA_CENSUS,
+  SSA_EARMARK_ALLOCATIONS = SSA_EARMARK_ALLOCATIONS,
+  SSA_EARMARK_ALLOCATIONS_EXPANDED = SSA_EARMARK_ALLOCATIONS_EXPANDED,
+  COFOG_GFSM2014_mapping = COFOG_GFSM2014_mapping
+)
+
+input_inventory <- imap_dfr(input_objects, function(data, dataset) {
+  missing_fields <- setdiff(required_fields[[dataset]], names(data))
+  has_country <- "country" %in% names(data)
+
+  tibble(
+    dataset = dataset,
+    file = basename(input_paths[[dataset]]),
+    n_rows = nrow(data),
+    n_columns = ncol(data),
+    n_countries = if (has_country) {
+      n_distinct(data$country[!is_missing_value(data$country)])
+    } else {
+      NA_integer_
+    },
+    missing_required_fields = if (length(missing_fields) == 0L) {
+      NA_character_
+    } else {
+      paste(missing_fields, collapse = "; ")
+    },
+    schema_status = if_else(
+      length(missing_fields) == 0L, "valid", "invalid"
+    )
+  )
+})
+
+if (any(input_inventory$schema_status == "invalid")) {
+  print(input_inventory)
+  stop("At least one input is missing required fields.")
+}
+
+mapping_column_audit <- tibble(
+  role = c("code", "label"),
+  identified_column = c("cofog_code", "cofog_name"),
+  present = c(
+    "cofog_code" %in% names(COFOG_GFSM2014_mapping),
+    "cofog_name" %in% names(COFOG_GFSM2014_mapping)
+  )
+)
+
+SSA_EARMARK_ALLOCATIONS_UNFILTERED <- SSA_EARMARK_ALLOCATIONS
+SSA_EARMARK_ALLOCATIONS_EXPANDED_UNFILTERED <-
+  SSA_EARMARK_ALLOCATIONS_EXPANDED
+
+if (is_partial_exclusive) {
+  allowed_earmark_statuses <- c(
+    "assigned_unrestricted", "cost_recovery_only",
+    "partial_earmark", "exclusive_earmark"
+  )
+  allocation_status_problems <- bind_rows(
+    SSA_EARMARK_ALLOCATIONS_UNFILTERED %>%
+      filter(
+        is_missing_value(earmark_status) |
+          !earmark_status %in% allowed_earmark_statuses
+      ) %>%
+      transmute(dataset = "SSA_EARMARK_ALLOCATIONS", country, instrument_id,
+                earmark_status),
+    SSA_EARMARK_ALLOCATIONS_EXPANDED_UNFILTERED %>%
+      filter(
+        is_missing_value(earmark_status) |
+          !earmark_status %in% allowed_earmark_statuses
+      ) %>%
+      transmute(
+        dataset = "SSA_EARMARK_ALLOCATIONS_EXPANDED",
+        country, instrument_id, earmark_status
+      )
+  )
+  allocation_status_map <- SSA_EARMARK_ALLOCATIONS_UNFILTERED %>%
+    distinct(country, instrument_id, earmark_status)
+  expanded_status_map <- SSA_EARMARK_ALLOCATIONS_EXPANDED_UNFILTERED %>%
+    distinct(country, instrument_id, earmark_status)
+  status_key_conflicts <- bind_rows(
+    allocation_status_map %>%
+      count(country, instrument_id, name = "n_statuses") %>%
+      filter(n_statuses != 1L) %>%
+      mutate(dataset = "SSA_EARMARK_ALLOCATIONS", .before = 1),
+    expanded_status_map %>%
+      count(country, instrument_id, name = "n_statuses") %>%
+      filter(n_statuses != 1L) %>%
+      mutate(dataset = "SSA_EARMARK_ALLOCATIONS_EXPANDED", .before = 1)
+  )
+  expanded_status_mismatches <- expanded_status_map %>%
+    anti_join(
+      allocation_status_map,
+      by = c("country", "instrument_id", "earmark_status")
+    )
+
+  if (nrow(allocation_status_problems) > 0L ||
+      nrow(status_key_conflicts) > 0L ||
+      nrow(expanded_status_mismatches) > 0L) {
+    print(allocation_status_problems)
+    print(status_key_conflicts)
+    print(expanded_status_mismatches)
+    stop("Allocation earmark_status validation failed before filtering.")
+  }
+
+  SSA_EARMARK_ALLOCATIONS <- SSA_EARMARK_ALLOCATIONS_UNFILTERED %>%
+    filter(earmark_status %in% partial_exclusive_statuses)
+  SSA_EARMARK_ALLOCATIONS_EXPANDED <-
+    SSA_EARMARK_ALLOCATIONS_EXPANDED_UNFILTERED %>%
+    filter(earmark_status %in% partial_exclusive_statuses)
+}
+
+analysis_filter_audit <- tribble(
+  ~dataset, ~measure, ~before, ~after,
+  "SSA_EARMARK_ALLOCATIONS", "rows",
+  nrow(SSA_EARMARK_ALLOCATIONS_UNFILTERED),
+  nrow(SSA_EARMARK_ALLOCATIONS),
+  "SSA_EARMARK_ALLOCATIONS", "distinct country + pair_id",
+  nrow(distinct(
+    SSA_EARMARK_ALLOCATIONS_UNFILTERED, country, pair_id
+  )),
+  nrow(distinct(SSA_EARMARK_ALLOCATIONS, country, pair_id)),
+  "SSA_EARMARK_ALLOCATIONS_EXPANDED", "expanded links",
+  nrow(SSA_EARMARK_ALLOCATIONS_EXPANDED_UNFILTERED),
+  nrow(SSA_EARMARK_ALLOCATIONS_EXPANDED)
+)
+
+filtered_status_distribution <- SSA_EARMARK_ALLOCATIONS %>%
+  distinct(country, instrument_id, earmark_status) %>%
+  count(earmark_status, name = "n_allocation_source_instruments") %>%
+  arrange(earmark_status)
+filtered_countries <- SSA_EARMARK_ALLOCATIONS %>%
+  distinct(country) %>%
+  arrange(country)
+
+if (is_partial_exclusive &&
+    (!all(SSA_EARMARK_ALLOCATIONS$earmark_status %in%
+          partial_exclusive_statuses) ||
+     !all(SSA_EARMARK_ALLOCATIONS_EXPANDED$earmark_status %in%
+          partial_exclusive_statuses))) {
+  stop("A non-partial/non-exclusive status remains after filtering.")
+}
+```
+
+## Input inventory
+
+```{r display-input-inventory}
+display_table(input_inventory)
+```
+
+## Mapping columns
+
+```{r display-mapping-columns}
+display_table(mapping_column_audit)
+```
+
+## Allocation-status filter audit
+
+```{r display-analysis-filter-audit}
+display_table(analysis_filter_audit)
+display_table(filtered_status_distribution)
+cat(
+  "Countries remaining in the allocation sample (", nrow(filtered_countries),
+  "): ", paste(filtered_countries$country, collapse = ", "), ".\n",
+  "Only partial_earmark and exclusive_earmark present: ",
+  if_else(
+    all(SSA_EARMARK_ALLOCATIONS$earmark_status %in%
+        partial_exclusive_statuses) &&
+      all(SSA_EARMARK_ALLOCATIONS_EXPANDED$earmark_status %in%
+          partial_exclusive_statuses),
+    "yes", "no"
+  ), ".\n",
+  sep = ""
+)
+```
+
+# 2. Allocation-key and scope checks
+
+No row is filtered to obtain the declared scope. The allocation table must already contain only canonical level-1 allocation rows.
+
+```{r validate-allocation-keys-and-scope}
+allocation_scope_audit <- tibble(
+  check = c(
+    "missing_or_blank_country",
+    "missing_or_blank_pair_id",
+    "share_level_not_1_or_missing",
+    "row_type_not_allocation_or_missing"
+  ),
+  n_problem_rows = c(
+    sum(is_missing_value(SSA_EARMARK_ALLOCATIONS$country)),
+    sum(is_missing_value(SSA_EARMARK_ALLOCATIONS$pair_id)),
+    sum(
+      is_missing_value(SSA_EARMARK_ALLOCATIONS$share_level) |
+        SSA_EARMARK_ALLOCATIONS$share_level != "1"
+    ),
+    sum(
+      is_missing_value(SSA_EARMARK_ALLOCATIONS$row_type) |
+        SSA_EARMARK_ALLOCATIONS$row_type != "allocation"
+    )
+  )
+) %>%
+  mutate(status = if_else(n_problem_rows == 0L, "passed", "failed"))
+
+if (any(allocation_scope_audit$n_problem_rows > 0L)) {
+  print(allocation_scope_audit)
+  stop(
+    "Allocation key or scope validation failed. No summary output was written."
+  )
+}
+
+country_universe <- SSA_EARMARK_ALLOCATIONS %>%
+  distinct(country) %>%
+  arrange(country)
+
+allocation_pairs <- SSA_EARMARK_ALLOCATIONS %>%
+  distinct(country, pair_id) %>%
+  arrange(country, pair_id)
+
+country_pair_totals <- allocation_pairs %>%
+  count(country, name = "total_allocations") %>%
+  arrange(country)
+
+duplicate_pair_audit <- SSA_EARMARK_ALLOCATIONS %>%
+  count(country, pair_id, name = "n_source_rows") %>%
+  filter(n_source_rows > 1L) %>%
+  mutate(excess_rows = n_source_rows - 1L) %>%
+  arrange(country, pair_id)
+
+allocation_grain_audit <- tibble(
+  measure = c(
+    "allocation_table_rows",
+    "distinct_country_pair_allocations",
+    "excess_rows_above_pair_grain",
+    "countries_in_allocation_universe"
+  ),
+  value = c(
+    nrow(SSA_EARMARK_ALLOCATIONS),
+    nrow(allocation_pairs),
+    nrow(SSA_EARMARK_ALLOCATIONS) - nrow(allocation_pairs),
+    nrow(country_universe)
+  )
+)
+```
+
+```{r display-allocation-scope-audit}
+display_table(allocation_scope_audit)
+```
+
+```{r display-allocation-grain-audit}
+display_table(allocation_grain_audit)
+```
+
+```{r display-country-allocation-counts}
+display_table(country_pair_totals)
+```
+
+```{r display-duplicate-pair-audit}
+display_table(duplicate_pair_audit)
+```
+
+## Single-valued category consistency
+
+`assignment_type`, `allocation_nature`, `is_purpose_restricted`, and `beneficiary_type` are single-valued at the allocation-pair grain. Missing values are treated as the explicit category `Missing` before consistency is tested, so a missing/non-missing disagreement is also a conflict.
+
+Destination function is not included in this stop gate because the task explicitly permits one allocation to finance several functions and defines a separate long pair-function grain.
+
+```{r validate-single-valued-categories}
+single_valued_fields <- c(
+  "assignment_type",
+  "allocation_nature",
+  "is_purpose_restricted",
+  "beneficiary_type"
+)
+
+pair_category_consistency <- SSA_EARMARK_ALLOCATIONS %>%
+  select(country, pair_id, evidence_id, all_of(single_valued_fields)) %>%
+  mutate(across(all_of(single_valued_fields), normalize_category)) %>%
+  pivot_longer(
+    cols = all_of(single_valued_fields),
+    names_to = "variable",
+    values_to = "category"
+  ) %>%
+  group_by(country, pair_id, variable) %>%
+  summarise(
+    n_source_rows = n(),
+    n_distinct_categories = n_distinct(category),
+    observed_categories = paste(sort(unique(category)), collapse = " | "),
+    evidence_ids = paste(evidence_id, collapse = " | "),
+    .groups = "drop"
+  ) %>%
+  arrange(country, pair_id, variable)
+
+single_value_conflicts <- pair_category_consistency %>%
+  filter(n_distinct_categories > 1L)
+
+if (nrow(single_value_conflicts) > 0L) {
+  print(single_value_conflicts)
+  stop(
+    "At least one allocation pair has conflicting values for a single-valued ",
+    "category. No summary output was written."
+  )
+}
+```
+
+```{r display-single-value-conflicts}
+display_table(single_value_conflicts)
+```
+
+# 3. Pair-level category preparation and audits
+
+Each of the four single-valued category datasets now contains exactly one row per `country + pair_id`.
+
+```{r prepare-pair-categories}
+assignment_type_pairs <- SSA_EARMARK_ALLOCATIONS %>%
+  transmute(
+    country,
+    pair_id,
+    category = normalize_category(assignment_type)
+  ) %>%
+  distinct(country, pair_id, category)
+
+allocation_nature_pairs <- SSA_EARMARK_ALLOCATIONS %>%
+  transmute(
+    country,
+    pair_id,
+    category = normalize_category(allocation_nature)
+  ) %>%
+  distinct(country, pair_id, category)
+
+purpose_restriction_pairs <- SSA_EARMARK_ALLOCATIONS %>%
+  transmute(
+    country,
+    pair_id,
+    category = normalize_category(is_purpose_restricted)
+  ) %>%
+  distinct(country, pair_id, category)
+
+beneficiary_type_pairs <- SSA_EARMARK_ALLOCATIONS %>%
+  transmute(
+    country,
+    pair_id,
+    category = normalize_category(beneficiary_type)
+  ) %>%
+  distinct(country, pair_id, category)
+
+pair_category_tables <- list(
+  assignment_type = assignment_type_pairs,
+  allocation_nature = allocation_nature_pairs,
+  is_purpose_restricted = purpose_restriction_pairs,
+  beneficiary_type = beneficiary_type_pairs
+)
+
+stopifnot(
+  all(map_int(pair_category_tables, nrow) == nrow(allocation_pairs)),
+  all(map_int(
+    pair_category_tables,
+    ~ nrow(distinct(.x, country, pair_id))
+  ) == nrow(allocation_pairs))
+)
+
+missing_category_audit <- imap_dfr(
+  pair_category_tables,
+  function(data, variable) {
+    data %>%
+      summarise(
+        variable = variable,
+        n_missing_allocations = sum(category == "Missing"),
+        n_countries_with_missing = n_distinct(country[category == "Missing"]),
+        missing_pairs = {
+          values <- pair_id[category == "Missing"]
+          if (length(values) == 0L) {
+            NA_character_
+          } else {
+            paste(values, collapse = "; ")
+          }
+        }
+      )
+  }
+)
+
+expected_categories <- list(
+  assignment_type = c(
+    "earmark_functional",
+    "hybrid_devolved_earmark",
+    "equalization_transfer",
+    "community_levy_external",
+    "tax_sharing_specific",
+    "tax_sharing_general",
+    "derivation_transfer"
+  ),
+  allocation_nature = c(
+    "proceeds_share", "cost_recovery_component"
+  ),
+  is_purpose_restricted = c("0", "1"),
+  beneficiary_type = c(
+    "fund",
+    "agency",
+    "ministry",
+    "collectivite_territoriale",
+    "sector",
+    "public_employees",
+    "program",
+    "supranational",
+    "general_budget"
+  )
+)
+
+category_value_audit <- imap_dfr(
+  pair_category_tables,
+  function(data, variable) {
+    expected_values <- expected_categories[[variable]]
+
+    data %>%
+      count(category, name = "n_allocations") %>%
+      mutate(
+        variable = variable,
+        status = case_when(
+          category == "Missing" ~ "Missing",
+          category %in% expected_values ~ "expected",
+          TRUE ~ "unexpected_preserved"
+        ),
+        .before = 1
+      )
+  }
+) %>%
+  arrange(variable, status, category)
+
+unexpected_category_values <- category_value_audit %>%
+  filter(status == "unexpected_preserved")
+```
+
+```{r display-missing-category-audit}
+display_table(missing_category_audit)
+```
+
+```{r display-category-value-audit}
+display_table(category_value_audit)
+```
+
+```{r display-unexpected-category-values}
+display_table(unexpected_category_values)
+```
+
+# 4. Assignment type
+
+```{r compute-assignment-type-summary}
+assignment_type_result <- make_composition_summary(
+  assignment_type_pairs,
+  country_universe,
+  country_pair_totals
+)
+assignment_type_summary <- assignment_type_result$summary
+```
+
+```{r display-assignment-type-summary}
+display_table(assignment_type_summary)
+```
+
+# 5. Allocation nature
+
+```{r compute-allocation-nature-summary}
+allocation_nature_result <- make_composition_summary(
+  allocation_nature_pairs,
+  country_universe,
+  country_pair_totals
+)
+allocation_nature_summary <- allocation_nature_result$summary
+```
+
+```{r display-allocation-nature-summary}
+display_table(allocation_nature_summary)
+```
+
+# 6. Purpose restriction
+
+```{r compute-purpose-restriction-summary}
+purpose_restriction_result <- make_composition_summary(
+  purpose_restriction_pairs,
+  country_universe,
+  country_pair_totals
+)
+purpose_restriction_summary <- purpose_restriction_result$summary
+```
+
+```{r display-purpose-restriction-summary}
+display_table(purpose_restriction_summary)
+```
+
+# 7. Beneficiary type
+
+```{r compute-beneficiary-type-summary}
+beneficiary_type_result <- make_composition_summary(
+  beneficiary_type_pairs,
+  country_universe,
+  country_pair_totals
+)
+beneficiary_type_summary <- beneficiary_type_result$summary
+```
+
+```{r display-beneficiary-type-summary}
+display_table(beneficiary_type_summary)
+```
+
+# 8. Destination-function long dataset
+
+Destination function is multi-valued. Primary values and semicolon-separated detail values are pooled across all source rows for a pair, trimmed, emptied values removed, and then deduplicated at `country + pair_id + destination_function`. `Missing` is assigned only if the pair has no usable value in either function field.
+
+```{r prepare-destination-functions}
+primary_function_values <- SSA_EARMARK_ALLOCATIONS %>%
+  transmute(
+    country,
+    pair_id,
+    destination_function = str_trim(destination_function)
+  ) %>%
+  filter(!is_missing_value(destination_function))
+
+detail_function_values <- SSA_EARMARK_ALLOCATIONS %>%
+  select(country, pair_id, destination_function_detail) %>%
+  separate_rows(destination_function_detail, sep = ";", convert = FALSE) %>%
+  transmute(
+    country,
+    pair_id,
+    destination_function = str_trim(destination_function_detail)
+  ) %>%
+  filter(!is_missing_value(destination_function))
+
+observed_pair_functions <- bind_rows(
+  primary_function_values,
+  detail_function_values
+) %>%
+  distinct(country, pair_id, destination_function)
+
+pairs_without_function <- allocation_pairs %>%
+  anti_join(
+    observed_pair_functions %>% distinct(country, pair_id),
+    by = c("country", "pair_id")
+  ) %>%
+  mutate(destination_function = "Missing")
+
+pair_function_values <- bind_rows(
+  observed_pair_functions,
+  pairs_without_function
+) %>%
+  distinct(country, pair_id, destination_function) %>%
+  arrange(country, pair_id, destination_function)
+
+multi_function_pair_audit <- pair_function_values %>%
+  count(country, pair_id, name = "n_destination_functions") %>%
+  filter(n_destination_functions > 1L) %>%
+  left_join(
+    pair_function_values %>%
+      group_by(country, pair_id) %>%
+      summarise(
+        destination_functions = paste(
+          destination_function,
+          collapse = "; "
+        ),
+        .groups = "drop"
+      ),
+    by = c("country", "pair_id")
+  ) %>%
+  arrange(country, pair_id)
+
+primary_function_multiplicity <- primary_function_values %>%
+  distinct(country, pair_id, destination_function) %>%
+  group_by(country, pair_id) %>%
+  summarise(
+    n_primary_functions = n(),
+    primary_functions = paste(destination_function, collapse = "; "),
+    .groups = "drop"
+  ) %>%
+  filter(n_primary_functions > 1L) %>%
+  arrange(country, pair_id)
+
+mapping_lookup <- COFOG_GFSM2014_mapping %>%
+  transmute(
+    destination_function = str_trim(cofog_code),
+    destination_function_label = cofog_name,
+    mapping_status = "mapped_gfsm"
+  )
+
+mapping_key_audit <- mapping_lookup %>%
+  group_by(destination_function) %>%
+  summarise(
+    n_rows = n(),
+    n_labels = n_distinct(destination_function_label),
+    labels = paste(
+      sort(unique(destination_function_label)),
+      collapse = " | "
+    ),
+    .groups = "drop"
+  )
+
+if (
+  any(is_missing_value(mapping_lookup$destination_function)) ||
+    any(is_missing_value(mapping_lookup$destination_function_label)) ||
+    any(mapping_key_audit$n_rows > 1L) ||
+    any(mapping_key_audit$n_labels > 1L)
+) {
+  print(mapping_key_audit %>% filter(n_rows > 1L | n_labels > 1L))
+  stop(
+    "COFOG/GFSM mapping keys or labels are missing, duplicated, or conflicting."
+  )
+}
+
+special_function_lookup <- tribble(
+  ~destination_function, ~destination_function_label, ~mapping_status,
+  "general_budget", "General budget", "preserved_non_gfsm",
+  "local_budget", "Local budget", "preserved_non_gfsm",
+  "unallocated", "Unallocated", "preserved_non_gfsm",
+  "Missing", "Missing", "preserved_non_gfsm"
+)
+
+function_label_lookup <- bind_rows(
+  mapping_lookup,
+  special_function_lookup
+)
+
+destination_function_long <- pair_function_values %>%
+  left_join(function_label_lookup, by = "destination_function") %>%
+  mutate(
+    mapping_status = replace_na(mapping_status, "unmapped"),
+    destination_function_label = if_else(
+      mapping_status == "unmapped",
+      paste0("Unmapped code: ", destination_function),
+      destination_function_label
+    )
+  ) %>%
+  select(
+    country,
+    pair_id,
+    destination_function,
+    destination_function_label,
+    mapping_status
+  ) %>%
+  arrange(country, pair_id, destination_function)
+
+unmapped_function_codes <- destination_function_long %>%
+  filter(mapping_status == "unmapped") %>%
+  group_by(destination_function, destination_function_label) %>%
+  summarise(
+    n_allocation_links = n(),
+    n_countries = n_distinct(country),
+    countries = paste(sort(unique(country)), collapse = "; "),
+    .groups = "drop"
+  ) %>%
+  arrange(destination_function)
+
+destination_function_long_audit <- tibble(
+  measure = c(
+    "distinct_allocation_pairs",
+    "distinct_pair_function_links",
+    "pairs_with_multiple_functions",
+    "pairs_assigned_Missing",
+    "unmapped_function_codes"
+  ),
+  value = c(
+    nrow(allocation_pairs),
+    nrow(destination_function_long),
+    nrow(multi_function_pair_audit),
+    sum(destination_function_long$destination_function == "Missing"),
+    nrow(unmapped_function_codes)
+  )
+)
+
+stopifnot(
+  !any(duplicated(
+    destination_function_long[c(
+      "country", "pair_id", "destination_function"
+    )]
+  )),
+  nrow(distinct(destination_function_long, country, pair_id)) ==
+    nrow(allocation_pairs)
+)
+```
+
+## Primary-function multiplicity
+
+This audit is non-fatal because destination function is explicitly multi-valued. Every observed function is retained in the long table.
+
+```{r display-primary-function-multiplicity}
+display_table(primary_function_multiplicity)
+```
+
+## Long-table audit
+
+```{r display-destination-long-audit}
+display_table(destination_function_long_audit)
+```
+
+```{r display-multi-function-pairs}
+display_table(multi_function_pair_audit)
+```
+
+## Unmapped function codes
+
+```{r display-unmapped-function-codes}
+display_table(unmapped_function_codes)
+```
+
+## Destination-function long table
+
+```{r display-destination-function-long}
+display_table(destination_function_long)
+```
+
+# 9. Destination-function composition
+
+The within-country denominator remains the total number of distinct allocation pairs in each country. Because one allocation may finance several functions, destination-function counts and shares can sum to more than the total number or share of allocations.
+
+```{r compute-destination-function-summary}
+destination_function_result <- make_composition_summary(
+  destination_function_long %>%
+    transmute(
+      country,
+      pair_id,
+      category = destination_function
+    ),
+  country_universe,
+  country_pair_totals
+)
+
+destination_function_summary <- destination_function_result$summary %>%
+  left_join(
+    destination_function_long %>%
+      distinct(
+        category = destination_function,
+        category_label = destination_function_label,
+        mapping_status
+      ),
+    by = "category"
+  ) %>%
+  select(
+    category,
+    category_label,
+    pooled_n_allocations,
+    n_countries_using,
+    median_allocations_among_users,
+    mean_within_country_share,
+    mapping_status
+  )
+```
+
+```{r display-destination-function-summary}
+display_table(destination_function_summary)
+```
+
+# 10. Final validation
+
+For each single-valued composition, the pooled category count must equal the 761 distinct allocations and each country's category shares must sum to one. These identities do not apply to the multi-valued destination-function table.
+
+```{r final-validation}
+ordinary_results <- list(
+  assignment_type = assignment_type_result,
+  allocation_nature = allocation_nature_result,
+  is_purpose_restricted = purpose_restriction_result,
+  beneficiary_type = beneficiary_type_result
+)
+
+ordinary_summary_validation <- imap_dfr(
+  ordinary_results,
+  function(result, variable) {
+    country_share_sums <- result$country_category_grid %>%
+      group_by(country) %>%
+      summarise(
+        share_sum = sum(within_country_share),
+        .groups = "drop"
+      )
+
+    tibble(
+      variable = variable,
+      pooled_count = sum(result$summary$pooled_n_allocations),
+      expected_allocation_count = nrow(allocation_pairs),
+      pooled_count_matches = pooled_count == expected_allocation_count,
+      n_country_share_sum_problems = sum(
+        abs(country_share_sums$share_sum - 1) > 1e-12
+      ),
+      status = if_else(
+        pooled_count_matches & n_country_share_sum_problems == 0L,
+        "passed",
+        "failed"
+      )
+    )
+  }
+)
+
+destination_denominator_validation <-
+  destination_function_result$country_category_grid %>%
+  group_by(country) %>%
+  summarise(
+    denominator_values = n_distinct(total_allocations),
+    denominator_used = first(total_allocations),
+    .groups = "drop"
+  ) %>%
+  left_join(
+    country_pair_totals %>%
+      rename(expected_total_allocations = total_allocations),
+    by = "country"
+  ) %>%
+  mutate(
+    denominator_matches =
+      denominator_values == 1L &
+      denominator_used == expected_total_allocations
+  )
+
+fatal_validation_problems <- bind_rows(
+  ordinary_summary_validation %>%
+    filter(status == "failed") %>%
+    transmute(
+      source = variable,
+      problem = "ordinary composition identity failed"
+    ),
+  destination_denominator_validation %>%
+    filter(!denominator_matches) %>%
+    transmute(
+      source = country,
+      problem = "destination denominator differs from allocation-pair total"
+    )
+)
+
+if (nrow(fatal_validation_problems) > 0L) {
+  print(fatal_validation_problems)
+  stop("Final validation failed. No summary output was written.")
+}
+```
+
+```{r display-ordinary-summary-validation}
+display_table(ordinary_summary_validation)
+```
+
+```{r display-destination-denominator-validation}
+display_table(destination_denominator_validation)
+```
+
+```{r display-fatal-validation-problems}
+display_table(fatal_validation_problems)
+```
+
+# 11. Export and verify the six requested tables
+
+```{r export-results}
+output_tables <- list(
+  assignment_type = assignment_type_summary,
+  allocation_nature = allocation_nature_summary,
+  purpose_restriction = purpose_restriction_summary,
+  beneficiary_type = beneficiary_type_summary,
+  destination_function_long = destination_function_long,
+  destination_function_summary = destination_function_summary
+)
+
+walk2(
+  output_tables,
+  output_paths[names(output_tables)],
+  ~ write_csv(.x, .y, na = "")
+)
+
+output_verification <- imap_dfr(output_tables, function(data, output_name) {
+  output_column_types <- map(data, function(column) {
+    if (is.character(column)) {
+      col_character()
+    } else if (is.integer(column)) {
+      col_integer()
+    } else if (is.double(column)) {
+      col_double()
+    } else if (is.logical(column)) {
+      col_logical()
+    } else {
+      col_guess()
+    }
+  })
+
+  saved_data <- read_csv(
+    output_paths[[output_name]],
+    col_types = do.call(cols, output_column_types),
+    show_col_types = FALSE,
+    progress = FALSE
+  )
+
+  tibble(
+    output = output_name,
+    file = basename(output_paths[[output_name]]),
+    n_rows = nrow(saved_data),
+    n_columns = ncol(saved_data),
+    row_count_matches = nrow(saved_data) == nrow(data),
+    column_names_match = identical(names(saved_data), names(data)),
+    values_match = isTRUE(all.equal(
+      saved_data,
+      data,
+      check.attributes = FALSE,
+      tolerance = 1e-12
+    )),
+    file_exists = file.exists(output_paths[[output_name]])
+  )
+})
+
+if (
+  any(!output_verification$row_count_matches) ||
+    any(!output_verification$column_names_match) ||
+    any(!output_verification$values_match) ||
+    any(!output_verification$file_exists)
+) {
+  print(output_verification)
+  stop("At least one exported CSV failed read-back verification.")
+}
+```
+
+```{r display-output-verification}
+display_table(output_verification)
+```
+
+# 12. Run summary
+
+```{r run-summary, results='asis'}
+missing_summary_text <- missing_category_audit %>%
+  transmute(text = paste0(variable, "=", n_missing_allocations)) %>%
+  pull(text) %>%
+  paste(collapse = "; ")
+
+unexpected_summary_text <- if (nrow(unexpected_category_values) == 0L) {
+  "none"
+} else {
+  unexpected_category_values %>%
+    transmute(text = paste0(variable, ":", category, " (", n_allocations, ")")) %>%
+    pull(text) %>%
+    paste(collapse = "; ")
+}
+
+cat(
+  "- Analysis variant: ", analysis_variant, ".\n",
+  "- Countries included (", nrow(country_universe), "): ",
+  paste(country_universe$country, collapse = ", "), ".\n",
+  "- Allocation-table rows: ", nrow(SSA_EARMARK_ALLOCATIONS),
+  "; distinct country + pair_id allocations: ", nrow(allocation_pairs), ".\n",
+  "- Missing pair-level categories: ", missing_summary_text,
+  "; destination_function=",
+  sum(destination_function_long$destination_function == "Missing"), ".\n",
+  "- Distinct destination-function links: ",
+  nrow(destination_function_long),
+  "; allocations with multiple functions: ",
+  nrow(multi_function_pair_audit), ".\n",
+  "- Unmapped destination-function codes: ",
+  nrow(unmapped_function_codes), ".\n",
+  "- Fatal validation problems: ", nrow(fatal_validation_problems),
+  "; unexpected category values preserved: ",
+  unexpected_summary_text, ".\n",
+  sep = ""
+)
+```

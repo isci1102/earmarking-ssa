@@ -1,0 +1,1406 @@
+---
+title: "Revenue sources and statutory allocation destinations across countries"
+author: "IMF research project"
+date: "`r format(Sys.Date(), '%Y-%m-%d')`"
+output:
+  html_document:
+    toc: true
+    toc_depth: 3
+    df_print: paged
+---
+
+This notebook creates one source-to-destination Sankey plot for every country
+with eligible partial or exclusive earmark links. The database is a **de jure**
+legal inventory; the figures do not measure collections, transfers,
+disbursements, or expenditure execution.
+
+```{r setup, include=FALSE}
+if (.Platform$OS.type == "windows") {
+  active_utf8_locale <- Sys.setlocale(
+    "LC_CTYPE",
+    "English_United States.utf8"
+  )
+  if (identical(active_utf8_locale, "")) {
+    stop("A UTF-8 locale is required to preserve accented text.")
+  }
+}
+
+input_path <- knitr::current_input(dir = TRUE)
+project_root <- normalizePath(
+  file.path(dirname(input_path), "..", ".."),
+  winslash = "/",
+  mustWork = TRUE
+)
+
+knitr::opts_knit$set(root.dir = project_root)
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+
+library(dplyr)
+library(tidyr)
+library(purrr)
+library(readr)
+library(stringr)
+library(tibble)
+library(ggplot2)
+library(scales)
+library(ggalluvial)
+library(knitr)
+
+options(stringsAsFactors = FALSE, scipen = 999)
+
+input_paths <- c(
+  expanded = file.path(
+    project_root,
+    "data",
+    "derived",
+    "SSA_EARMARK_ALLOCATIONS_EXPANDED.csv"
+  ),
+  cofog_mapping = file.path(
+    project_root,
+    "data",
+    "COFOG_GFSM2014_mapping.csv"
+  )
+)
+
+table_dir <- file.path(
+  project_root,
+  "analysis",
+  "tables",
+  "partial_exclusive",
+  "country_focus"
+)
+figure_dir <- file.path(
+  project_root,
+  "analysis",
+  "figures",
+  "partial_exclusive",
+  "country_focus"
+)
+dir.create(table_dir, recursive = TRUE, showWarnings = FALSE)
+dir.create(figure_dir, recursive = TRUE, showWarnings = FALSE)
+
+partial_exclusive_statuses <- c(
+  "partial_earmark",
+  "exclusive_earmark"
+)
+excluded_revenue_classes <- c(
+  "Missing",
+  "unclassified_review"
+)
+excluded_destinations <- c(
+  "local_budget",
+  "unallocated",
+  "general_budget"
+)
+
+# This lookup changes labels only; country inclusion is always data-driven.
+country_names <- tribble(
+  ~country, ~country_name,
+  "BEN", "Benin",
+  "BFA", "Burkina Faso",
+  "CAF", "Central African Republic",
+  "CIV", "C\u00f4te d'Ivoire",
+  "CMR", "Cameroon",
+  "COD", "Democratic Republic of the Congo",
+  "COG", "Republic of the Congo",
+  "COM", "Comoros",
+  "GAB", "Gabon",
+  "GHA", "Ghana",
+  "GIN", "Guinea",
+  "MDG", "Madagascar",
+  "MLI", "Mali",
+  "NER", "Niger",
+  "NGA", "Nigeria",
+  "SEN", "Senegal",
+  "TCD", "Chad",
+  "TGO", "Togo",
+  "ZAF", "South Africa"
+)
+
+revenue_class_colours <- c(
+  "administrative_regulatory_and_user_charges" = "#4C6F91",
+  "environmental_and_pollution" = "#557A59",
+  "excises_and_specific_consumption" = "#8A763D",
+  "financial_and_transaction_taxes" = "#4E7C7D",
+  "general_consumption_and_turnover" = "#466B70",
+  "income_profits_and_capital_gains" = "#5A6992",
+  "international_trade_and_customs" = "#7E6753",
+  "natural_resources_and_extractives" = "#2F6F73",
+  "payroll_and_social_contributions" = "#8B6F47",
+  "penalties_interest_and_other_receipts" = "#887379",
+  "property_and_wealth" = "#6B6B6B",
+  "registration_stamp_and_legal_duties" = "#7A4F68",
+  "sector_specific_and_business_levies" = "#1F4E79"
+)
+
+read_all_character <- function(path) {
+  read_csv(
+    path,
+    col_types = cols(.default = col_character()),
+    na = "",
+    trim_ws = FALSE,
+    name_repair = "minimal",
+    show_col_types = FALSE,
+    progress = FALSE
+  )
+}
+
+display_table <- function(data, digits = 6) {
+  if (nrow(data) == 0L) {
+    cat("No rows to report.\n")
+  } else {
+    print(knitr::kable(data, digits = digits, row.names = FALSE))
+    cat("\n")
+  }
+}
+
+is_missing_text <- function(values) {
+  is.na(values) | str_trim(as.character(values)) == ""
+}
+
+make_revenue_class_label <- function(values) {
+  values %>%
+    str_replace_all("_", " ") %>%
+    str_to_sentence()
+}
+
+make_destination_label <- function(code, name) {
+  if_else(
+    str_detect(code, "^[0-9]+$"),
+    paste0(code, " \u2014 ", name),
+    name
+  )
+}
+
+destination_order_key <- function(code) {
+  case_when(
+    str_detect(code, "^[0-9]+$") ~ as.numeric(code),
+    code == "Missing" ~ 1001,
+    TRUE ~ 2000
+  )
+}
+```
+
+# 1. Load and validate the inputs
+
+The expanded allocation table is the analytical input. The COFOG mapping is
+used only to attach readable names to the destination codes already present in
+that table.
+
+```{r load-and-validate-inputs}
+if (!all(file.exists(input_paths))) {
+  stop(
+    "Missing input files: ",
+    paste(names(input_paths)[!file.exists(input_paths)], collapse = "; ")
+  )
+}
+
+input_md5_before <- unname(tools::md5sum(input_paths))
+
+expanded_loaded <- read_all_character(input_paths[["expanded"]])
+cofog_mapping_loaded <- read_delim(
+  input_paths[["cofog_mapping"]],
+  delim = ";",
+  col_types = cols(.default = col_character()),
+  trim_ws = TRUE,
+  name_repair = "minimal",
+  show_col_types = FALSE,
+  progress = FALSE
+)
+
+required_expanded_columns <- c(
+  "country",
+  "pair_id",
+  "census_instrument_id",
+  "earmark_status",
+  "destination_function",
+  "destination_function_detail",
+  "revenue_class"
+)
+required_mapping_columns <- c(
+  "cofog_code",
+  "level",
+  "cofog_name"
+)
+
+missing_expanded_columns <- setdiff(
+  required_expanded_columns,
+  names(expanded_loaded)
+)
+missing_mapping_columns <- setdiff(
+  required_mapping_columns,
+  names(cofog_mapping_loaded)
+)
+
+schema_audit <- tibble(
+  input = c(
+    "SSA_EARMARK_ALLOCATIONS_EXPANDED",
+    "COFOG_GFSM2014_mapping"
+  ),
+  rows = c(nrow(expanded_loaded), nrow(cofog_mapping_loaded)),
+  columns = c(ncol(expanded_loaded), ncol(cofog_mapping_loaded)),
+  missing_required_columns = c(
+    if_else(
+      length(missing_expanded_columns) == 0L,
+      NA_character_,
+      paste(missing_expanded_columns, collapse = "; ")
+    ),
+    if_else(
+      length(missing_mapping_columns) == 0L,
+      NA_character_,
+      paste(missing_mapping_columns, collapse = "; ")
+    )
+  )
+)
+
+if (length(missing_expanded_columns) > 0L ||
+    length(missing_mapping_columns) > 0L) {
+  print(schema_audit)
+  stop("One or more required columns are missing.")
+}
+
+missing_country_names <- setdiff(
+  sort(unique(expanded_loaded$country)),
+  country_names$country
+)
+if (length(missing_country_names) > 0L) {
+  stop(
+    "Country-name labels are missing for: ",
+    paste(missing_country_names, collapse = "; ")
+  )
+}
+```
+
+```{r display-schema-audit}
+display_table(schema_audit)
+```
+
+# 2. Apply the earmark-status and revenue-class filters
+
+Blank revenue classifications are made visible as `Missing` before applying
+the requested revenue-class exclusion. No other revenue classification is
+changed.
+
+```{r filter-status-and-revenue-class}
+expanded_prepared <- expanded_loaded %>%
+  mutate(
+    country = str_trim(country),
+    revenue_class_display = if_else(
+      is_missing_text(revenue_class),
+      "Missing",
+      str_trim(revenue_class)
+    )
+  )
+
+status_eligible <- expanded_prepared %>%
+  filter(earmark_status %in% partial_exclusive_statuses)
+
+revenue_eligible <- status_eligible %>%
+  filter(!revenue_class_display %in% excluded_revenue_classes)
+
+missing_status_keys <- status_eligible %>%
+  filter(
+    is_missing_text(country) |
+      is_missing_text(pair_id) |
+      is_missing_text(census_instrument_id)
+  ) %>%
+  select(country, pair_id, census_instrument_id)
+
+if (nrow(missing_status_keys) > 0L) {
+  print(missing_status_keys)
+  stop("The allocation-link key is incomplete after the status filter.")
+}
+if (!all(status_eligible$earmark_status %in% partial_exclusive_statuses)) {
+  stop("A non-partial/non-exclusive status remains after filtering.")
+}
+
+revenue_class_exclusion_audit <- status_eligible %>%
+  mutate(
+    exclusion = case_when(
+      revenue_class_display == "Missing" ~ "Missing",
+      revenue_class_display == "unclassified_review" ~
+        "unclassified_review",
+      TRUE ~ "Retained"
+    )
+  ) %>%
+  count(country, exclusion, name = "n_expanded_rows") %>%
+  complete(
+    country = sort(unique(expanded_prepared$country)),
+    exclusion = c("Missing", "unclassified_review", "Retained"),
+    fill = list(n_expanded_rows = 0L)
+  )
+
+retained_revenue_classes <- sort(unique(
+  revenue_eligible$revenue_class_display
+))
+unexpected_revenue_classes <- setdiff(
+  retained_revenue_classes,
+  names(revenue_class_colours)
+)
+if (length(unexpected_revenue_classes) > 0L) {
+  revenue_class_colours <- c(
+    revenue_class_colours,
+    set_names(
+      rep("#6B6B6B", length(unexpected_revenue_classes)),
+      unexpected_revenue_classes
+    )
+  )
+}
+```
+
+```{r display-revenue-filter-audit}
+display_table(
+  revenue_class_exclusion_audit %>%
+    filter(exclusion != "Retained", n_expanded_rows > 0L)
+)
+if (length(unexpected_revenue_classes) == 0L) {
+  cat("No retained revenue classes lack a specified plot colour.\n")
+} else {
+  cat(
+    "Retained revenue classes using the documented neutral fallback colour: ",
+    paste(unexpected_revenue_classes, collapse = "; "),
+    "\n"
+  )
+}
+```
+
+# 3. Expand and deduplicate destinations
+
+The primary destination is combined with every semicolon-separated detail
+destination. Empty tokens are removed. A row with no destination in either
+field is retained as `Missing`. The final counting unit is exactly one distinct
+`country + pair_id + census_instrument_id + destination_function` link.
+
+```{r expand-and-deduplicate-destinations}
+primary_destination_candidates <- revenue_eligible %>%
+  transmute(
+    country,
+    pair_id,
+    census_instrument_id,
+    revenue_class = revenue_class_display,
+    destination_function = str_trim(destination_function),
+    token_source = "primary"
+  ) %>%
+  filter(!is_missing_text(destination_function))
+
+detail_destination_candidates <- revenue_eligible %>%
+  select(
+    country,
+    pair_id,
+    census_instrument_id,
+    revenue_class = revenue_class_display,
+    destination_function_detail
+  ) %>%
+  separate_longer_delim(destination_function_detail, delim = ";") %>%
+  transmute(
+    country,
+    pair_id,
+    census_instrument_id,
+    revenue_class,
+    destination_function = str_trim(destination_function_detail),
+    token_source = "detail"
+  ) %>%
+  filter(!is_missing_text(destination_function))
+
+nonmissing_destination_candidates <- bind_rows(
+  primary_destination_candidates,
+  detail_destination_candidates
+)
+
+links_without_destination <- revenue_eligible %>%
+  distinct(
+    country,
+    pair_id,
+    census_instrument_id,
+    revenue_class = revenue_class_display
+  ) %>%
+  anti_join(
+    nonmissing_destination_candidates %>%
+      distinct(country, pair_id, census_instrument_id),
+    by = c("country", "pair_id", "census_instrument_id")
+  ) %>%
+  mutate(
+    destination_function = "Missing",
+    token_source = "missing"
+  )
+
+destination_candidates <- bind_rows(
+  nonmissing_destination_candidates,
+  links_without_destination
+)
+
+candidate_key_audit <- destination_candidates %>%
+  group_by(
+    country,
+    pair_id,
+    census_instrument_id,
+    destination_function
+  ) %>%
+  summarise(
+    n_candidate_rows = n(),
+    n_revenue_classes = n_distinct(revenue_class),
+    token_sources = paste(sort(unique(token_source)), collapse = "; "),
+    .groups = "drop"
+  )
+
+conflicting_link_sources <- candidate_key_audit %>%
+  filter(n_revenue_classes > 1L)
+
+duplicate_link_candidates <- candidate_key_audit %>%
+  filter(n_candidate_rows > 1L) %>%
+  arrange(
+    country,
+    desc(n_candidate_rows),
+    pair_id,
+    census_instrument_id,
+    destination_function
+  )
+
+if (nrow(conflicting_link_sources) > 0L) {
+  print(conflicting_link_sources)
+  stop("An allocation link has conflicting revenue classifications.")
+}
+
+destination_links_deduplicated <- destination_candidates %>%
+  arrange(country, pair_id, census_instrument_id, token_source) %>%
+  distinct(
+    country,
+    pair_id,
+    census_instrument_id,
+    destination_function,
+    .keep_all = TRUE
+  )
+
+post_dedup_duplicate_keys <- destination_links_deduplicated %>%
+  count(
+    country,
+    pair_id,
+    census_instrument_id,
+    destination_function,
+    name = "n_rows"
+  ) %>%
+  filter(n_rows > 1L)
+
+if (nrow(post_dedup_duplicate_keys) > 0L) {
+  print(post_dedup_duplicate_keys)
+  stop("Allocation-link keys remain duplicated after deduplication.")
+}
+
+destination_exclusion_audit <- destination_links_deduplicated %>%
+  mutate(
+    destination_outcome = case_when(
+      destination_function == "general_budget" ~ "general_budget",
+      destination_function == "local_budget" ~ "local_budget",
+      destination_function == "unallocated" ~ "unallocated",
+      TRUE ~ "Retained"
+    )
+  ) %>%
+  count(country, destination_outcome, name = "n_allocation_links") %>%
+  complete(
+    country = sort(unique(expanded_prepared$country)),
+    destination_outcome = c(
+      "general_budget",
+      "local_budget",
+      "unallocated",
+      "Retained"
+    ),
+    fill = list(n_allocation_links = 0L)
+  )
+
+destination_links_filtered <- destination_links_deduplicated %>%
+  filter(!destination_function %in% excluded_destinations)
+```
+
+```{r display-expansion-audit}
+display_table(duplicate_link_candidates)
+display_table(conflicting_link_sources)
+display_table(post_dedup_duplicate_keys)
+display_table(
+  destination_exclusion_audit %>%
+    filter(destination_outcome != "Retained", n_allocation_links > 0L)
+)
+```
+
+# 4. Attach readable destination labels
+
+Only four-digit COFOG groups are used for the readable destination names. An
+unexpected destination code would be retained and explicitly marked as
+unmapped rather than silently dropped.
+
+```{r map-destination-labels}
+cofog_group_mapping <- cofog_mapping_loaded %>%
+  mutate(
+    cofog_code = str_trim(cofog_code),
+    level = str_to_lower(str_trim(level)),
+    cofog_name = str_trim(cofog_name)
+  ) %>%
+  filter(level == "group") %>%
+  select(cofog_code, cofog_name)
+
+duplicate_cofog_group_codes <- cofog_group_mapping %>%
+  count(cofog_code, name = "n_mapping_rows") %>%
+  filter(n_mapping_rows > 1L)
+
+if (nrow(duplicate_cofog_group_codes) > 0L ||
+    any(is_missing_text(cofog_group_mapping$cofog_code))) {
+  print(duplicate_cofog_group_codes)
+  stop("The COFOG group mapping key is missing or duplicated.")
+}
+
+destination_links_labelled <- destination_links_filtered %>%
+  left_join(
+    cofog_group_mapping,
+    by = c("destination_function" = "cofog_code"),
+    relationship = "many-to-one"
+  ) %>%
+  mutate(
+    destination_mapping_status = case_when(
+      !is.na(cofog_name) ~ "mapped_gfsm_group",
+      destination_function == "Missing" ~ "missing",
+      TRUE ~ "unmapped"
+    ),
+    destination_function_name = case_when(
+      !is.na(cofog_name) ~ cofog_name,
+      destination_function == "Missing" ~ "Missing destination",
+      TRUE ~ paste0("Unmapped code: ", destination_function)
+    ),
+    destination_label = make_destination_label(
+      destination_function,
+      destination_function_name
+    ),
+    revenue_class_label = make_revenue_class_label(revenue_class)
+  ) %>%
+  left_join(country_names, by = "country", relationship = "many-to-one")
+
+unmapped_destination_functions <- destination_links_labelled %>%
+  filter(destination_mapping_status == "unmapped") %>%
+  count(country, destination_function, name = "n_allocation_links")
+
+missing_retained_categories <- destination_links_labelled %>%
+  summarise(
+    missing_revenue_class = sum(is_missing_text(revenue_class)),
+    missing_destination_function = sum(is_missing_text(destination_function)),
+    missing_country = sum(is_missing_text(country)),
+    missing_pair_id = sum(is_missing_text(pair_id)),
+    missing_census_instrument_id = sum(
+      is_missing_text(census_instrument_id)
+    )
+  )
+
+if (any(unlist(missing_retained_categories) > 0L)) {
+  print(missing_retained_categories)
+  stop("A required retained plot category or key is missing.")
+}
+```
+
+```{r display-mapping-audit}
+display_table(duplicate_cofog_group_codes)
+display_table(unmapped_destination_functions)
+display_table(missing_retained_categories)
+```
+
+# 5. Country-level filter and link audit
+
+Status and revenue-class exclusions below are counts of expanded input rows.
+Destination exclusions and plotted totals are counts after destination
+expansion and allocation-link deduplication, so the columns are intentionally
+reported as separate stages rather than as a single row waterfall.
+
+```{r build-country-audit}
+country_universe <- expanded_prepared %>%
+  distinct(country) %>%
+  left_join(country_names, by = "country", relationship = "many-to-one")
+
+country_audit <- country_universe %>%
+  left_join(
+    expanded_prepared %>%
+      count(country, name = "input_expanded_rows"),
+    by = "country"
+  ) %>%
+  left_join(
+    status_eligible %>%
+      count(country, name = "status_eligible_rows"),
+    by = "country"
+  ) %>%
+  left_join(
+    revenue_class_exclusion_audit %>%
+      filter(exclusion == "Missing") %>%
+      transmute(
+        country,
+        rows_excluded_missing_revenue = n_expanded_rows
+      ),
+    by = "country"
+  ) %>%
+  left_join(
+    revenue_class_exclusion_audit %>%
+      filter(exclusion == "unclassified_review") %>%
+      transmute(
+        country,
+        rows_excluded_unclassified_review = n_expanded_rows
+      ),
+    by = "country"
+  ) %>%
+  left_join(
+    revenue_eligible %>%
+      count(country, name = "revenue_eligible_rows"),
+    by = "country"
+  ) %>%
+  left_join(
+    destination_candidates %>%
+      count(country, name = "destination_candidates"),
+    by = "country"
+  ) %>%
+  left_join(
+    duplicate_link_candidates %>%
+      group_by(country) %>%
+      summarise(
+        duplicate_link_candidates_removed = sum(n_candidate_rows - 1L),
+        .groups = "drop"
+      ),
+    by = "country"
+  ) %>%
+  left_join(
+    destination_exclusion_audit %>%
+      filter(destination_outcome == "general_budget") %>%
+      transmute(
+        country,
+        links_excluded_general_budget = n_allocation_links
+      ),
+    by = "country"
+  ) %>%
+  left_join(
+    destination_exclusion_audit %>%
+      filter(destination_outcome == "local_budget") %>%
+      transmute(
+        country,
+        links_excluded_local_budget = n_allocation_links
+      ),
+    by = "country"
+  ) %>%
+  left_join(
+    destination_exclusion_audit %>%
+      filter(destination_outcome == "unallocated") %>%
+      transmute(
+        country,
+        links_excluded_unallocated = n_allocation_links
+      ),
+    by = "country"
+  ) %>%
+  left_join(
+    destination_links_labelled %>%
+      group_by(country) %>%
+      summarise(
+        links_plotted = n(),
+        pairs_plotted = n_distinct(pair_id),
+        revenue_classes_plotted = n_distinct(revenue_class),
+        destination_functions_plotted = n_distinct(destination_function),
+        .groups = "drop"
+      ),
+    by = "country"
+  ) %>%
+  mutate(
+    across(
+      where(is.numeric),
+      ~replace_na(.x, 0L)
+    ),
+    rows_excluded_status = input_expanded_rows - status_eligible_rows,
+    plot_status = case_when(
+      status_eligible_rows == 0L ~
+        "Not plotted: no partial or exclusive earmark rows",
+      revenue_eligible_rows == 0L ~
+        "Not plotted: all eligible rows have excluded revenue classes",
+      links_plotted == 0L ~
+        "Not plotted: all links have excluded destinations",
+      TRUE ~ "Plotted"
+    )
+  ) %>%
+  arrange(country)
+
+country_audit <- country_audit %>%
+  select(
+    country,
+    country_name,
+    input_expanded_rows,
+    status_eligible_rows,
+    rows_excluded_status,
+    rows_excluded_missing_revenue,
+    rows_excluded_unclassified_review,
+    revenue_eligible_rows,
+    destination_candidates,
+    duplicate_link_candidates_removed,
+    links_excluded_general_budget,
+    links_excluded_local_budget,
+    links_excluded_unallocated,
+    links_plotted,
+    pairs_plotted,
+    revenue_classes_plotted,
+    destination_functions_plotted,
+    plot_status
+  )
+
+countries_to_plot <- country_audit %>%
+  filter(plot_status == "Plotted") %>%
+  pull(country)
+
+if (length(countries_to_plot) == 0L) {
+  stop("No country has an eligible source-to-destination link.")
+}
+```
+
+```{r display-country-audit}
+display_table(country_audit)
+```
+
+# 6. Aggregate the exact plot data
+
+Each CSV row is one country-level source-to-destination edge. The edge count is
+the number of distinct allocation links represented by that flow.
+
+```{r aggregate-plot-data}
+flow_counts <- destination_links_labelled %>%
+  count(
+    country,
+    country_name,
+    revenue_class,
+    revenue_class_label,
+    destination_function,
+    destination_function_name,
+    destination_label,
+    destination_mapping_status,
+    name = "n_allocation_links"
+  )
+
+source_order <- flow_counts %>%
+  group_by(country, revenue_class, revenue_class_label) %>%
+  summarise(
+    source_total_links = sum(n_allocation_links),
+    .groups = "drop"
+  ) %>%
+  group_by(country) %>%
+  arrange(desc(source_total_links), revenue_class_label, .by_group = TRUE) %>%
+  mutate(
+    source_order = row_number(),
+    source_plot_label = str_wrap(revenue_class_label, width = 28),
+    source_colour = unname(revenue_class_colours[revenue_class])
+  ) %>%
+  ungroup()
+
+destination_order <- flow_counts %>%
+  group_by(
+    country,
+    destination_function,
+    destination_function_name,
+    destination_label,
+    destination_mapping_status
+  ) %>%
+  summarise(
+    destination_total_links = sum(n_allocation_links),
+    .groups = "drop"
+  ) %>%
+  mutate(order_key = destination_order_key(destination_function)) %>%
+  group_by(country) %>%
+  arrange(order_key, destination_function, destination_label, .by_group = TRUE) %>%
+  mutate(
+    destination_order = row_number(),
+    destination_plot_label = str_wrap(destination_label, width = 30)
+  ) %>%
+  ungroup() %>%
+  select(-order_key)
+
+country_plot_settings <- flow_counts %>%
+  group_by(country) %>%
+  summarise(
+    total_allocation_links = sum(n_allocation_links),
+    n_source_nodes = n_distinct(revenue_class),
+    n_destination_nodes = n_distinct(destination_function),
+    .groups = "drop"
+  ) %>%
+  mutate(
+    destination_label_minimum = case_when(
+      total_allocation_links <= 20L ~ 1L,
+      total_allocation_links <= 40L ~ 2L,
+      total_allocation_links <= 150L ~ 3L,
+      TRUE ~ 5L
+    ),
+    source_label_minimum = pmax(
+      destination_label_minimum,
+      ceiling(total_allocation_links * 0.08)
+    ),
+    plot_width_inches = if_else(n_destination_nodes > 16L, 18, 16),
+    plot_height_inches = pmin(
+      20,
+      pmax(9, 7 + 0.35 * pmax(n_source_nodes, n_destination_nodes))
+    )
+  )
+
+all_country_flow_data <- flow_counts %>%
+  left_join(
+    source_order,
+    by = c("country", "revenue_class", "revenue_class_label")
+  ) %>%
+  left_join(
+    destination_order,
+    by = c(
+      "country",
+      "destination_function",
+      "destination_function_name",
+      "destination_label",
+      "destination_mapping_status"
+    )
+  ) %>%
+  left_join(country_plot_settings, by = "country") %>%
+  mutate(
+    source_label_shown = source_total_links >= source_label_minimum,
+    destination_label_shown =
+      destination_total_links >= destination_label_minimum
+  ) %>%
+  arrange(country, source_order, destination_order) %>%
+  select(
+    country,
+    country_name,
+    revenue_class,
+    revenue_class_label,
+    source_plot_label,
+    source_order,
+    source_total_links,
+    source_colour,
+    source_label_minimum,
+    source_label_shown,
+    destination_function,
+    destination_function_name,
+    destination_label,
+    destination_plot_label,
+    destination_order,
+    destination_total_links,
+    destination_mapping_status,
+    destination_label_minimum,
+    destination_label_shown,
+    n_allocation_links
+  )
+
+plot_data_by_country <- all_country_flow_data %>%
+  split(.$country) %>%
+  map(~arrange(.x, source_order, destination_order))
+
+aggregation_checks <- imap_dfr(
+  plot_data_by_country,
+  function(data, country_code) {
+    expected_links <- country_audit %>%
+      filter(country == country_code) %>%
+      pull(links_plotted)
+    tibble(
+      country = country_code,
+      csv_rows = nrow(data),
+      sum_edge_counts = sum(data$n_allocation_links),
+      expected_links = expected_links,
+      duplicate_edges = sum(duplicated(
+        data[c("country", "revenue_class", "destination_function")]
+      )),
+      passed = sum_edge_counts == expected_links & duplicate_edges == 0L
+    )
+  }
+)
+
+if (!all(aggregation_checks$passed)) {
+  print(aggregation_checks %>% filter(!passed))
+  stop("One or more country flow tables failed reconciliation.")
+}
+```
+
+```{r display-aggregation-checks}
+display_table(aggregation_checks)
+```
+
+# 7. Create the Sankey plots
+
+Flow colours identify source revenue classes and remain stable across all
+countries. Node and axis-side text are deliberately enlarged for presentation
+use. Very small destination nodes are left unlabeled when necessary; their
+codes and names remain in the matching CSV.
+
+```{r define-plot-function}
+make_sankey_plot <- function(flow_data) {
+  country_name <- unique(flow_data$country_name)
+  total_links <- sum(flow_data$n_allocation_links)
+  destination_label_minimum <- unique(
+    flow_data$destination_label_minimum
+  )
+  source_label_minimum <- unique(flow_data$source_label_minimum)
+
+  source_levels <- flow_data %>%
+    distinct(source_plot_label, source_order) %>%
+    arrange(source_order) %>%
+    pull(source_plot_label)
+  destination_levels <- flow_data %>%
+    distinct(destination_plot_label, destination_order) %>%
+    arrange(destination_order) %>%
+    pull(destination_plot_label)
+  legend_values <- flow_data %>%
+    distinct(revenue_class, revenue_class_label, source_order) %>%
+    arrange(source_order)
+
+  plot_data <- flow_data %>%
+    mutate(
+      source_plot_label = factor(
+        source_plot_label,
+        levels = source_levels
+      ),
+      destination_plot_label = factor(
+        destination_plot_label,
+        levels = destination_levels
+      )
+    )
+
+  ggplot(
+    plot_data,
+    aes(
+      axis1 = source_plot_label,
+      axis2 = destination_plot_label,
+      y = n_allocation_links
+    )
+  ) +
+    geom_alluvium(
+      aes(fill = revenue_class),
+      width = 0.18,
+      alpha = 0.82,
+      knot.pos = 0.45,
+      colour = "#FFFFFF",
+      linewidth = 0.16
+    ) +
+    geom_stratum(
+      width = 0.20,
+      fill = "#D7E0E7",
+      colour = "#FFFFFF",
+      linewidth = 0.55
+    ) +
+    geom_text(
+      stat = "stratum",
+      aes(
+        label = after_stat(ifelse(
+          (x == 1 & count >= source_label_minimum) |
+            (x == 2 & count >= destination_label_minimum),
+          as.character(stratum),
+          ""
+        ))
+      ),
+      colour = "#253746",
+      size = 5.0,
+      lineheight = 0.95,
+      fontface = "plain"
+    ) +
+    scale_x_discrete(
+      limits = c("Revenue source", "Earmarked destination"),
+      expand = c(0.14, 0.14)
+    ) +
+    scale_fill_manual(
+      values = revenue_class_colours,
+      breaks = legend_values$revenue_class,
+      labels = legend_values$revenue_class_label,
+      drop = TRUE,
+      name = "Revenue source"
+    ) +
+    guides(
+      fill = guide_legend(
+        ncol = 3,
+        byrow = TRUE,
+        title.position = "top",
+        override.aes = list(alpha = 0.95)
+      )
+    ) +
+    labs(
+      title = paste0(
+        "From revenue source to earmarked destination \u2014 ",
+        country_name
+      ),
+      subtitle = paste0(
+        "Flow width represents ",
+        comma(total_links),
+        " distinct statutory allocation links"
+      ),
+      x = NULL,
+      y = NULL,
+      caption = str_wrap(
+        paste0(
+          "Note: Partial and exclusive earmark instruments only. General ",
+          "budget, local budget, and unallocated destinations are excluded. ",
+          "Each link is a distinct allocation pair, linked census instrument, ",
+          "and destination combination. Source nodes with fewer than ",
+          source_label_minimum,
+          " links and destination nodes with fewer than ",
+          destination_label_minimum,
+          " links are left unlabeled when needed; every label is retained in ",
+          "the matching CSV."
+        ),
+        width = 135
+      )
+    ) +
+    theme_minimal(base_size = 15) +
+    theme(
+      plot.title.position = "plot",
+      plot.title = element_text(
+        face = "bold",
+        colour = "#222222",
+        size = 18
+      ),
+      plot.subtitle = element_text(
+        colour = "#4D4D4D",
+        size = 13,
+        margin = margin(b = 12)
+      ),
+      plot.caption = element_text(
+        colour = "#666666",
+        hjust = 0,
+        size = 10,
+        margin = margin(t = 11)
+      ),
+      axis.text.x = element_text(
+        face = "bold",
+        colour = "#333333",
+        size = 15
+      ),
+      axis.text.y = element_blank(),
+      axis.ticks = element_blank(),
+      panel.grid = element_blank(),
+      legend.position = "bottom",
+      legend.text = element_text(size = 11.5),
+      legend.title = element_text(face = "bold", size = 12.5),
+      legend.key.height = unit(0.55, "cm"),
+      legend.key.width = unit(0.85, "cm"),
+      plot.margin = margin(14, 26, 14, 26)
+    )
+}
+
+plot_objects_by_country <- map(
+  plot_data_by_country,
+  make_sankey_plot
+)
+```
+
+# 8. Save and verify matching PNG and CSV outputs
+
+Files are first written to a temporary staging directory. The complete bundle
+is copied into the existing country-focus folders only after every CSV and PNG
+passes its read-back checks.
+
+```{r define-output-paths}
+output_stems <- set_names(
+  paste0(
+    "11_",
+    str_to_lower(names(plot_data_by_country)),
+    "_revenue_to_destination_sankey"
+  ),
+  names(plot_data_by_country)
+)
+
+csv_output_paths <- set_names(
+  file.path(table_dir, paste0(output_stems, ".csv")),
+  names(output_stems)
+)
+png_output_paths <- set_names(
+  file.path(figure_dir, paste0(output_stems, ".png")),
+  names(output_stems)
+)
+```
+
+```{r stage-and-verify-output-bundle}
+stage_dir <- tempfile(pattern = "11_all_country_sankey_stage_")
+dir.create(stage_dir, recursive = TRUE, showWarnings = FALSE)
+
+stage_csv_paths <- set_names(
+  file.path(stage_dir, paste0(output_stems, ".csv")),
+  names(output_stems)
+)
+stage_png_paths <- set_names(
+  file.path(stage_dir, paste0(output_stems, ".png")),
+  names(output_stems)
+)
+
+iwalk(plot_data_by_country, function(data, country_code) {
+  write_csv(data, stage_csv_paths[[country_code]], na = "")
+})
+
+iwalk(plot_objects_by_country, function(plot_object, country_code) {
+  dimensions <- country_plot_settings %>%
+    filter(country == country_code)
+  ggsave(
+    filename = stage_png_paths[[country_code]],
+    plot = plot_object,
+    width = dimensions$plot_width_inches,
+    height = dimensions$plot_height_inches,
+    units = "in",
+    dpi = 300,
+    bg = "white",
+    limitsize = FALSE
+  )
+})
+
+same_table_values <- function(saved, expected) {
+  expected_as_text <- expected %>%
+    mutate(across(everything(), as.character))
+  identical(names(saved), names(expected)) &&
+    nrow(saved) == nrow(expected) &&
+    identical(as.data.frame(saved), as.data.frame(expected_as_text))
+}
+
+staged_csv_checks <- imap_dfr(
+  plot_data_by_country,
+  function(expected, country_code) {
+    saved <- read_csv(
+      stage_csv_paths[[country_code]],
+      col_types = cols(.default = col_character()),
+      show_col_types = FALSE,
+      progress = FALSE
+    )
+    tibble(
+      country = country_code,
+      csv_rows = nrow(saved),
+      passed = same_table_values(saved, expected)
+    )
+  }
+)
+
+staged_png_checks <- imap_dfr(
+  plot_objects_by_country,
+  function(plot_object, country_code) {
+    tibble(
+      country = country_code,
+      png_bytes = file.info(stage_png_paths[[country_code]])$size,
+      passed = file.exists(stage_png_paths[[country_code]]) &&
+        file.info(stage_png_paths[[country_code]])$size > 10000
+    )
+  }
+)
+
+if (!all(staged_csv_checks$passed) || !all(staged_png_checks$passed)) {
+  print(staged_csv_checks %>% filter(!passed))
+  print(staged_png_checks %>% filter(!passed))
+  stop("Staged CSV or PNG checks failed; final outputs were not changed.")
+}
+```
+
+```{r commit-output-bundle}
+final_paths <- c(
+  set_names(
+    unname(csv_output_paths),
+    paste0(names(csv_output_paths), "_csv")
+  ),
+  set_names(
+    unname(png_output_paths),
+    paste0(names(png_output_paths), "_png")
+  )
+)
+stage_paths <- c(
+  set_names(
+    unname(stage_csv_paths),
+    paste0(names(stage_csv_paths), "_csv")
+  ),
+  set_names(
+    unname(stage_png_paths),
+    paste0(names(stage_png_paths), "_png")
+  )
+)
+
+commit_output_bundle <- function(stage_paths, final_paths) {
+  existed_before <- set_names(file.exists(final_paths), names(final_paths))
+  backup_dir <- tempfile(pattern = "11_all_country_sankey_backup_")
+  dir.create(backup_dir, recursive = TRUE, showWarnings = FALSE)
+  backup_paths <- file.path(backup_dir, basename(final_paths))
+  names(backup_paths) <- names(final_paths)
+  committed <- FALSE
+
+  on.exit({
+    if (!committed) {
+      for (name in names(final_paths)) {
+        if (existed_before[[name]] && file.exists(backup_paths[[name]])) {
+          file.copy(
+            backup_paths[[name]],
+            final_paths[[name]],
+            overwrite = TRUE
+          )
+        } else if (!existed_before[[name]] &&
+                   file.exists(final_paths[[name]])) {
+          file.remove(final_paths[[name]])
+        }
+      }
+    }
+    unlink(stage_dir, recursive = TRUE, force = TRUE)
+    unlink(backup_dir, recursive = TRUE, force = TRUE)
+  }, add = TRUE)
+
+  for (name in names(final_paths)[existed_before]) {
+    if (!file.copy(
+      final_paths[[name]],
+      backup_paths[[name]],
+      overwrite = FALSE
+    )) {
+      stop("Could not create a rollback copy for ", name, ".")
+    }
+  }
+
+  commit_ok <- vapply(
+    names(final_paths),
+    function(name) file.copy(
+      stage_paths[[name]],
+      final_paths[[name]],
+      overwrite = TRUE
+    ),
+    logical(1)
+  )
+
+  if (!all(commit_ok)) {
+    stop("Could not commit the complete output bundle.")
+  }
+
+  committed <- TRUE
+  invisible(TRUE)
+}
+
+commit_output_bundle(stage_paths, final_paths)
+```
+
+```{r verify-final-outputs}
+final_csv_checks <- imap_dfr(
+  plot_data_by_country,
+  function(expected, country_code) {
+    saved <- read_csv(
+      csv_output_paths[[country_code]],
+      col_types = cols(.default = col_character()),
+      show_col_types = FALSE,
+      progress = FALSE
+    )
+    tibble(
+      country = country_code,
+      csv_path = csv_output_paths[[country_code]],
+      csv_rows = nrow(saved),
+      csv_matches = same_table_values(saved, expected)
+    )
+  }
+)
+
+final_png_checks <- imap_dfr(
+  plot_objects_by_country,
+  function(plot_object, country_code) {
+    tibble(
+      country = country_code,
+      png_path = png_output_paths[[country_code]],
+      png_bytes = file.info(png_output_paths[[country_code]])$size,
+      png_valid = file.exists(png_output_paths[[country_code]]) &&
+        file.info(png_output_paths[[country_code]])$size > 10000
+    )
+  }
+)
+
+input_md5_after <- unname(tools::md5sum(input_paths))
+input_preservation_check <- tibble(
+  input = names(input_paths),
+  md5_before = input_md5_before,
+  md5_after = input_md5_after,
+  unchanged = input_md5_before == input_md5_after
+)
+
+if (!all(final_csv_checks$csv_matches) ||
+    !all(final_png_checks$png_valid) ||
+    !all(input_preservation_check$unchanged)) {
+  print(final_csv_checks %>% filter(!csv_matches))
+  print(final_png_checks %>% filter(!png_valid))
+  print(input_preservation_check %>% filter(!unchanged))
+  stop("Final output or input-preservation checks failed.")
+}
+
+output_manifest <- final_csv_checks %>%
+  select(country, csv_path, csv_rows, csv_matches) %>%
+  left_join(
+    final_png_checks %>%
+      select(country, png_path, png_bytes, png_valid),
+    by = "country"
+  ) %>%
+  left_join(
+    country_audit %>%
+      select(country, country_name, links_plotted),
+    by = "country"
+  ) %>%
+  arrange(country) %>%
+  select(
+    country,
+    country_name,
+    links_plotted,
+    csv_rows,
+    csv_matches,
+    png_bytes,
+    png_valid,
+    csv_path,
+    png_path
+  )
+```
+
+```{r display-output-checks}
+display_table(input_preservation_check)
+display_table(output_manifest)
+```
+
+# 9. Saved figures
+
+```{r display-saved-figures, echo=FALSE, results='asis'}
+for (country_code in names(png_output_paths)) {
+  country_name <- country_names %>%
+    filter(country == country_code) %>%
+    pull(country_name)
+  cat("\n\n## ", country_name, "\n\n", sep = "")
+  print(knitr::include_graphics(
+    png_output_paths[[country_code]],
+    rel_path = FALSE
+  ))
+  cat("\n\n")
+}
+```
+
+# 10. Concise completion summary
+
+```{r completion-summary, results='asis'}
+not_plotted <- country_audit %>%
+  filter(plot_status != "Plotted")
+
+cat(
+  "- Countries plotted: ",
+  length(countries_to_plot),
+  " (",
+  paste(countries_to_plot, collapse = ", "),
+  ").\n",
+  "- Distinct allocation links plotted: ",
+  comma(sum(country_audit$links_plotted)),
+  ".\n",
+  "- Expanded rows excluded by earmark status: ",
+  comma(sum(country_audit$rows_excluded_status)),
+  ".\n",
+  "- Status-eligible rows excluded for missing revenue class: ",
+  comma(sum(country_audit$rows_excluded_missing_revenue)),
+  ".\n",
+  "- Status-eligible rows excluded as unclassified_review: ",
+  comma(sum(country_audit$rows_excluded_unclassified_review)),
+  ".\n",
+  "- Expanded destination links excluded as general budget, local budget, ",
+  "or unallocated: ",
+  comma(
+    sum(country_audit$links_excluded_general_budget) +
+      sum(country_audit$links_excluded_local_budget) +
+      sum(country_audit$links_excluded_unallocated)
+  ),
+  ".\n",
+  "- Duplicate allocation-link candidates removed: ",
+  comma(sum(country_audit$duplicate_link_candidates_removed)),
+  ".\n",
+  "- Unmapped retained destination codes: ",
+  nrow(unmapped_destination_functions),
+  ".\n",
+  "- Countries without an eligible plot: ",
+  paste0(
+    not_plotted$country,
+    " (",
+    str_remove(not_plotted$plot_status, "^Not plotted: "),
+    ")",
+    collapse = "; "
+  ),
+  ".\n",
+  sep = ""
+)
+```

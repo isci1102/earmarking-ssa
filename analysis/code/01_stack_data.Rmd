@@ -1,0 +1,1774 @@
+---
+title: "SSA revenue instruments: stack and prepare the data"
+author: "IMF research project"
+date: "`r format(Sys.Date(), '%Y-%m-%d')`"
+output:
+  html_document:
+    toc: true
+    toc_depth: 3
+    df_print: paged
+---
+
+This notebook stacks the final country-level XLSX workbooks, applies the requested analytical filters, expands Census links, performs essential sanity checks, and reports legal-corpus coverage. The data describe the **de jure** legal system; they do not measure collections, transfers, disbursements, or expenditure execution. No plots or broader descriptive statistics are produced.
+
+All identifiers are country-specific. Census instruments are keyed by `country + instrument_id`, allocation channels by `country + pair_id`, and expanded links by `country + pair_id + census_instrument_id`. References are never matched across countries.
+
+```{r setup, include=FALSE}
+input_path <- knitr::current_input(dir = TRUE)
+project_root <- normalizePath(
+  file.path(dirname(input_path), "..", ".."),
+  winslash = "/",
+  mustWork = TRUE
+)
+
+knitr::opts_knit$set(root.dir = project_root)
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+
+library(readxl)
+library(dplyr)
+library(tidyr)
+library(purrr)
+library(stringr)
+library(readr)
+library(tibble)
+library(jsonlite)
+library(knitr)
+
+options(stringsAsFactors = FALSE, scipen = 999)
+
+country_root <- file.path(project_root, "countries")
+derived_dir <- file.path(project_root, "data", "derived")
+tables_dir <- file.path(project_root, "analysis", "tables")
+dir.create(derived_dir, recursive = TRUE, showWarnings = FALSE)
+dir.create(tables_dir, recursive = TRUE, showWarnings = FALSE)
+
+output_paths <- list(
+  census_stacked = file.path(derived_dir, "SSA_CENSUS_STACKED.csv"),
+  allocation_stacked = file.path(
+    derived_dir, "SSA_EARMARK_ALLOCATIONS_STACKED.csv"
+  ),
+  census = file.path(derived_dir, "SSA_CENSUS.csv"),
+  allocation = file.path(derived_dir, "SSA_EARMARK_ALLOCATIONS.csv"),
+  allocation_expanded = file.path(
+    derived_dir, "SSA_EARMARK_ALLOCATIONS_EXPANDED.csv"
+  ),
+  corpus_coverage = file.path(
+    tables_dir, "01_country_corpus_coverage.csv"
+  ),
+  sanity_workbook = file.path(
+    tables_dir, "01_stack_sanity_checks.xlsx"
+  )
+)
+
+manifest_path <- Sys.getenv(
+  "STACK_SANITY_MANIFEST",
+  unset = file.path(tempdir(), "01_stack_sanity_checks_manifest.json")
+)
+dir.create(dirname(manifest_path), recursive = TRUE, showWarnings = FALSE)
+
+census_columns <- c(
+  "evidence_id", "row_type", "country", "instrument_id", "document_id",
+  "document_type", "document_year", "legal_article", "page_start", "page_end",
+  "official_name", "official_name_underspecified", "in_force",
+  "tax_instrument", "tax_base_detail", "instrument_label_verbatim",
+  "instrument_nature", "base_sector", "is_penalty", "rate_value",
+  "rate_is_schedule", "rate_schedule_detail", "rate_type", "rate_basis",
+  "rate_base_quantum", "rate_reference_instrument", "change_type",
+  "enabling_reference", "evidence_status"
+)
+
+allocation_columns <- c(
+  "evidence_id", "row_type", "country", "instrument_id", "pair_id",
+  "document_id", "document_type", "document_year", "legal_article",
+  "page_start", "page_end", "official_name", "destination",
+  "beneficiary_type", "allocation_nature", "share_value",
+  "share_is_schedule", "share_schedule_detail", "share_type", "share_basis",
+  "share_level", "share_pool", "is_purpose_restricted", "assignment_type",
+  "census_ref", "destination_function", "destination_function_basis",
+  "destination_function_multi", "destination_function_detail"
+)
+
+required_columns <- list(
+  Census = census_columns,
+  Allocation = allocation_columns
+)
+
+required_sheets <- c(
+  Census = "census_rows",
+  Allocation = "evidence_table"
+)
+
+numeric_fields <- c("rate_value", "rate_base_quantum", "share_value")
+integer_fields <- c("page_start", "page_end", "share_level")
+binary_fields <- c(
+  "official_name_underspecified", "in_force", "is_penalty",
+  "rate_is_schedule", "share_is_schedule", "is_purpose_restricted",
+  "destination_function_multi"
+)
+flexible_text_fields <- c(
+  "document_year", "destination_function", "destination_function_detail"
+)
+
+collapse_or_na <- function(values, separator = "; ") {
+  values <- unique(values[!is.na(values) & values != ""])
+  if (length(values) == 0L) NA_character_ else paste(values, collapse = separator)
+}
+
+is_blank_cell <- function(x) {
+  length(x) == 0L || all(is.na(x)) ||
+    (is.character(x) && length(x) == 1L && str_trim(x) == "")
+}
+
+cell_storage_type <- function(x) {
+  if (is_blank_cell(x)) return(NA_character_)
+  class(x)[1]
+}
+
+cell_to_text <- function(x) {
+  if (is_blank_cell(x) || length(x) != 1L) return(NA_character_)
+  if (inherits(x, "POSIXt")) {
+    return(format(x, "%Y-%m-%d %H:%M:%S", tz = "UTC"))
+  }
+  if (is.character(x)) return(x)
+  if (is.numeric(x)) {
+    return(format(x, scientific = FALSE, trim = TRUE, digits = 15))
+  }
+  if (is.logical(x)) return(ifelse(x, "TRUE", "FALSE"))
+  as.character(x)
+}
+
+is_missing_value <- function(x) {
+  if (is.character(x)) is.na(x) | str_trim(x) == "" else is.na(x)
+}
+
+is_numeric_text <- function(x) {
+  !is.na(x) && str_detect(
+    x,
+    "^[+-]?(?:[0-9]+\\.?[0-9]*|\\.[0-9]+)(?:[eE][+-]?[0-9]+)?$"
+  ) && is.finite(suppressWarnings(as.numeric(x)))
+}
+
+is_integer_text <- function(x) {
+  if (!is_numeric_text(x)) return(FALSE)
+  value <- suppressWarnings(as.numeric(x))
+  abs(value - round(value)) < 1e-9
+}
+
+is_binary_text <- function(x) {
+  !is.na(x) && tolower(x) %in% c("0", "1", "true", "false")
+}
+
+target_type_for <- function(field) {
+  case_when(
+    field %in% numeric_fields ~ "numeric",
+    field %in% integer_fields ~ "integer",
+    field %in% binary_fields ~ "binary_0_1",
+    TRUE ~ "text"
+  )
+}
+
+cell_is_compatible <- function(x, field, target_type) {
+  if (is_blank_cell(x)) return(TRUE)
+  storage_type <- cell_storage_type(x)
+  text_value <- cell_to_text(x)
+
+  if (target_type == "text") {
+    if (field %in% flexible_text_fields) {
+      return(storage_type %in% c("character", "numeric", "integer"))
+    }
+    return(storage_type == "character")
+  }
+  if (target_type == "numeric") return(is_numeric_text(text_value))
+  if (target_type == "integer") return(is_integer_text(text_value))
+  if (target_type == "binary_0_1") return(is_binary_text(text_value))
+  FALSE
+}
+
+convert_list_column <- function(column, field, target_type) {
+  text_values <- map_chr(column, cell_to_text)
+
+  if (target_type == "text") return(text_values)
+  if (target_type == "numeric") {
+    return(ifelse(
+      is.na(text_values), NA_real_, suppressWarnings(as.numeric(text_values))
+    ))
+  }
+  if (target_type == "integer") {
+    return(ifelse(
+      is.na(text_values),
+      NA_integer_,
+      as.integer(round(suppressWarnings(as.numeric(text_values))))
+    ))
+  }
+  if (target_type == "binary_0_1") {
+    return(case_when(
+      is.na(text_values) ~ NA_integer_,
+      tolower(text_values) %in% c("1", "true") ~ 1L,
+      tolower(text_values) %in% c("0", "false") ~ 0L,
+      TRUE ~ NA_integer_
+    ))
+  }
+  stop("Unknown target type: ", target_type)
+}
+
+n_distinct_country_key <- function(data, key_columns) {
+  required <- c("country", key_columns)
+  valid <- rep(TRUE, nrow(data))
+  for (field in required) {
+    valid <- valid & !is_missing_value(data[[field]])
+  }
+  if (!any(valid)) return(0L)
+  nrow(distinct(data[valid, required, drop = FALSE]))
+}
+
+display_table <- function(data, digits = 4) {
+  if (nrow(data) == 0L) {
+    cat("No rows to report.\n")
+  } else {
+    knitr::kable(data, digits = digits, row.names = FALSE)
+  }
+}
+```
+
+# 1. Discover and validate final country files
+
+The recursive search is restricted to the canonical country-final locations identified in `AGENTS.md`, plus the consolidated Anglophone Census location used by Ghana and South Africa: `countries/<ISO>/outputs/extract/` for existing Census files, `countries/<ISO>/outputs/census/*_ALL_CENSUS.xlsx` for consolidated Census files, and `countries/<ISO>/outputs/allocations/` for Allocation files. Other output, derived, intermediate, backup, and Excel lock files are not candidates.
+
+```{r discover-files}
+all_country_xlsx <- list.files(
+  country_root,
+  pattern = "\\.xlsx$",
+  recursive = TRUE,
+  full.names = TRUE,
+  ignore.case = TRUE
+)
+
+project_root_normalized <- normalizePath(
+  project_root, winslash = "/", mustWork = TRUE
+)
+all_country_paths <- normalizePath(
+  all_country_xlsx, winslash = "/", mustWork = TRUE
+)
+relative_paths <- str_remove(
+  all_country_paths,
+  fixed(paste0(project_root_normalized, "/"))
+)
+
+candidate_inventory <- tibble(
+  absolute_path = all_country_paths,
+  relative_path = relative_paths,
+  file_name = basename(relative_paths),
+  country = str_match(relative_paths, "^countries/([^/]+)/")[, 2],
+  dataset = case_when(
+    str_detect(
+      relative_paths,
+      regex(
+        paste0(
+          "^countries/[^/]+/outputs/",
+          "(?:extract/[^/]+_CENSUS|census/[^/]+_ALL_CENSUS)\\.xlsx$"
+        ),
+        ignore_case = TRUE
+      )
+    ) ~ "Census",
+    str_detect(
+      relative_paths,
+      regex(
+        paste0(
+          "^countries/[^/]+/outputs/allocations/",
+          "[^/]+_EARMARKS?_ALLOCATIONS?\\.xlsx$"
+        ),
+        ignore_case = TRUE
+      )
+    ) ~ "Allocation",
+    TRUE ~ NA_character_
+  ),
+  is_temporary = str_starts(file_name, fixed("~$"))
+) %>%
+  filter(!is.na(dataset), !is_temporary) %>%
+  mutate(required_sheet = unname(required_sheets[dataset])) %>%
+  arrange(country, dataset, relative_path)
+
+if (nrow(candidate_inventory) == 0L) {
+  stop("No canonical final country XLSX files were found.")
+}
+
+duplicate_candidates <- candidate_inventory %>%
+  count(country, dataset, name = "candidate_count") %>%
+  filter(candidate_count > 1L)
+
+if (nrow(duplicate_candidates) > 0L) {
+  duplicate_detail <- candidate_inventory %>%
+    semi_join(duplicate_candidates, by = c("country", "dataset")) %>%
+    select(country, dataset, relative_path)
+  print(duplicate_detail)
+  stop(
+    "Several plausible final files exist for at least one country and dataset. ",
+    "No outputs were written."
+  )
+}
+
+candidate_countries <- sort(unique(candidate_inventory$country))
+country_dataset_presence_preflight <- expand_grid(
+  country = candidate_countries,
+  dataset = c("Census", "Allocation")
+) %>%
+  left_join(
+    candidate_inventory %>% count(country, dataset, name = "n_files"),
+    by = c("country", "dataset")
+  ) %>%
+  mutate(n_files = replace_na(n_files, 0L))
+
+missing_country_dataset_preflight <- country_dataset_presence_preflight %>%
+  filter(n_files == 0L)
+
+if (nrow(missing_country_dataset_preflight) > 0L) {
+  print(missing_country_dataset_preflight)
+  stop(
+    "At least one country has only one of the two required datasets. ",
+    "No outputs were written."
+  )
+}
+
+if (!"COD" %in% candidate_countries) {
+  stop("COD is missing from the final-file inventory. No outputs were written.")
+}
+
+inspect_schema <- function(dataset, country, absolute_path, relative_path,
+                           required_sheet) {
+  expected <- required_columns[[dataset]]
+
+  tryCatch({
+    sheets <- excel_sheets(absolute_path)
+    if (!required_sheet %in% sheets) {
+      return(tibble(
+        dataset = dataset,
+        country = country,
+        relative_path = relative_path,
+        sheet = required_sheet,
+        source_rows = NA_integer_,
+        source_columns = NA_integer_,
+        missing_required = paste(expected, collapse = "; "),
+        additional_columns = NA_character_,
+        duplicate_headers = NA_character_,
+        required_order_matches = FALSE,
+        schema_status = "failed_missing_sheet",
+        schema_reason = paste0("Required sheet not found: ", required_sheet)
+      ))
+    }
+
+    header_only <- read_excel(
+      absolute_path,
+      sheet = required_sheet,
+      n_max = 0,
+      .name_repair = "minimal"
+    )
+    headers <- names(header_only)
+    duplicate_headers <- unique(headers[duplicated(headers)])
+    missing_required <- setdiff(expected, headers)
+    additional_columns <- setdiff(headers, expected)
+    source_rows <- nrow(read_excel(
+      absolute_path,
+      sheet = required_sheet,
+      col_types = "list",
+      trim_ws = FALSE,
+      .name_repair = "minimal"
+    ))
+
+    schema_ok <- length(missing_required) == 0L &&
+      length(duplicate_headers) == 0L
+
+    schema_reason_value <- if (length(missing_required) > 0L) {
+      paste0(
+        "Missing required columns: ", paste(missing_required, collapse = "; ")
+      )
+    } else if (length(duplicate_headers) > 0L) {
+      paste0(
+        "Duplicated headers: ", paste(duplicate_headers, collapse = "; ")
+      )
+    } else {
+      NA_character_
+    }
+
+    tibble(
+      dataset = dataset,
+      country = country,
+      relative_path = relative_path,
+      sheet = required_sheet,
+      source_rows = source_rows,
+      source_columns = length(headers),
+      missing_required = collapse_or_na(missing_required),
+      additional_columns = collapse_or_na(additional_columns),
+      duplicate_headers = collapse_or_na(duplicate_headers),
+      required_order_matches = identical(
+        headers[headers %in% expected], expected
+      ),
+      schema_status = ifelse(schema_ok, "schema_ok", "failed_schema"),
+      schema_reason = schema_reason_value
+    )
+  }, error = function(e) {
+    tibble(
+      dataset = dataset,
+      country = country,
+      relative_path = relative_path,
+      sheet = required_sheet,
+      source_rows = NA_integer_,
+      source_columns = NA_integer_,
+      missing_required = NA_character_,
+      additional_columns = NA_character_,
+      duplicate_headers = NA_character_,
+      required_order_matches = FALSE,
+      schema_status = "failed_read",
+      schema_reason = conditionMessage(e)
+    )
+  })
+}
+
+schema_audit <- pmap_dfr(
+  candidate_inventory %>%
+    select(dataset, country, absolute_path, relative_path, required_sheet),
+  inspect_schema
+)
+
+if (any(schema_audit$schema_status != "schema_ok")) {
+  print(schema_audit)
+  stop(
+    "At least one final workbook failed schema validation. ",
+    "Missing required columns were not created and no outputs were written."
+  )
+}
+```
+
+Required source columns are read first as typed Excel cells. Storage types and semantic compatibility are audited before explicit conversion to a common type. Mixed numeric/text storage is permitted only for fields documented as flexible text or numeric-like values; incompatible non-missing values stop the run.
+
+```{r load-and-stack}
+load_validated_file <- function(dataset, country, absolute_path, relative_path,
+                                required_sheet) {
+  expected <- required_columns[[dataset]]
+
+  tryCatch({
+    raw_data <- read_excel(
+      absolute_path,
+      sheet = required_sheet,
+      col_types = "list",
+      trim_ws = FALSE,
+      .name_repair = "minimal"
+    ) %>%
+      select(all_of(expected))
+
+    field_audit <- map_dfr(expected, function(field) {
+      target_type <- target_type_for(field)
+      column <- raw_data[[field]]
+      storage_types <- map_chr(column, cell_storage_type)
+      compatible <- map_lgl(
+        column,
+        cell_is_compatible,
+        field = field,
+        target_type = target_type
+      )
+      text_values <- map_chr(column, cell_to_text)
+      incompatible_examples <- unique(text_values[!compatible])
+
+      tibble(
+        dataset = dataset,
+        country = country,
+        relative_path = relative_path,
+        field = field,
+        target_type = target_type,
+        observed_storage_types = {
+          observed <- sort(unique(na.omit(storage_types)))
+          if (length(observed) == 0L) {
+            "all_missing"
+          } else {
+            paste(observed, collapse = "; ")
+          }
+        },
+        n_nonmissing = sum(!is.na(storage_types)),
+        n_incompatible = sum(!compatible),
+        incompatible_examples = collapse_or_na(head(incompatible_examples, 5)),
+        conversion_rule = case_when(
+          target_type == "text" && field %in% flexible_text_fields ~
+            "explicit character conversion without padding or recoding",
+          target_type == "text" ~ "preserve character value exactly",
+          target_type == "numeric" ~ "strict numeric parse",
+          target_type == "integer" ~ "strict whole-number parse",
+          target_type == "binary_0_1" ~
+            "normalize 0/1 or TRUE/FALSE to integer 0/1",
+          TRUE ~ NA_character_
+        ),
+        type_status = ifelse(
+          sum(!compatible) == 0L, "compatible", "incompatible"
+        )
+      )
+    })
+
+    if (any(field_audit$n_incompatible > 0L)) {
+      return(list(
+        status = "failed_type",
+        reason = "One or more required fields contain incompatible values",
+        n_rows = nrow(raw_data),
+        data = NULL,
+        type_audit = field_audit
+      ))
+    }
+
+    converted_columns <- map(expected, function(field) {
+      convert_list_column(
+        raw_data[[field]], field, target_type_for(field)
+      )
+    })
+    names(converted_columns) <- expected
+    converted_data <- as_tibble(converted_columns)
+
+    observed_countries <- unique(converted_data$country[
+      !is_missing_value(converted_data$country)
+    ])
+    country_ok <- length(observed_countries) == 1L &&
+      observed_countries[[1]] == country
+
+    if (!country_ok) {
+      return(list(
+        status = "failed_country",
+        reason = paste0(
+          "Workbook country values do not uniquely equal folder country ",
+          country, ": ", paste(observed_countries, collapse = "; ")
+        ),
+        n_rows = nrow(converted_data),
+        data = NULL,
+        type_audit = field_audit
+      ))
+    }
+
+    list(
+      status = "loaded",
+      reason = NA_character_,
+      n_rows = nrow(converted_data),
+      data = converted_data,
+      type_audit = field_audit
+    )
+  }, error = function(e) {
+    list(
+      status = "failed_read",
+      reason = conditionMessage(e),
+      n_rows = NA_integer_,
+      data = NULL,
+      type_audit = tibble(
+        dataset = character(), country = character(),
+        relative_path = character(), field = character(),
+        target_type = character(), observed_storage_types = character(),
+        n_nonmissing = integer(), n_incompatible = integer(),
+        incompatible_examples = character(), conversion_rule = character(),
+        type_status = character()
+      )
+    )
+  })
+}
+
+load_results <- pmap(
+  candidate_inventory %>%
+    select(dataset, country, absolute_path, relative_path, required_sheet),
+  load_validated_file
+)
+
+load_status <- candidate_inventory %>%
+  select(dataset, country, relative_path) %>%
+  mutate(
+    load_status = map_chr(load_results, "status"),
+    load_reason = map_chr(load_results, function(result) {
+      if (is.null(result$reason) || length(result$reason) == 0L) {
+        NA_character_
+      } else {
+        result$reason
+      }
+    }),
+    loaded_rows = map_int(load_results, function(result) {
+      if (is.null(result$n_rows) || length(result$n_rows) == 0L) {
+        NA_integer_
+      } else {
+        as.integer(result$n_rows)
+      }
+    })
+  )
+
+type_audit <- map_dfr(load_results, "type_audit")
+
+type_file_summary <- type_audit %>%
+  group_by(dataset, country, relative_path) %>%
+  summarise(
+    type_status = ifelse(
+      any(n_incompatible > 0L), "incompatible", "compatible"
+    ),
+    type_variation_fields = collapse_or_na(
+      field[str_detect(observed_storage_types, fixed(";"))]
+    ),
+    incompatible_fields = collapse_or_na(field[n_incompatible > 0L]),
+    incompatible_examples = collapse_or_na(
+      incompatible_examples[n_incompatible > 0L]
+    ),
+    .groups = "drop"
+  )
+
+if (any(load_status$load_status != "loaded")) {
+  print(load_status)
+  print(type_audit %>% filter(n_incompatible > 0L))
+  stop(
+    "At least one final workbook failed type or country validation. ",
+    "No incompatible values were coerced and no outputs were written."
+  )
+}
+
+SSA_CENSUS_STACKED <- load_results[
+  candidate_inventory$dataset == "Census"
+] %>%
+  map("data") %>%
+  bind_rows()
+
+SSA_EARMARK_ALLOCATIONS_STACKED <- load_results[
+  candidate_inventory$dataset == "Allocation"
+] %>%
+  map("data") %>%
+  bind_rows()
+
+stopifnot(
+  identical(names(SSA_CENSUS_STACKED), census_columns),
+  identical(names(SSA_EARMARK_ALLOCATIONS_STACKED), allocation_columns),
+  nrow(SSA_CENSUS_STACKED) == sum(
+    load_status$loaded_rows[load_status$dataset == "Census"]
+  ),
+  nrow(SSA_EARMARK_ALLOCATIONS_STACKED) == sum(
+    load_status$loaded_rows[load_status$dataset == "Allocation"]
+  )
+)
+
+loaded_census_countries <- sort(unique(SSA_CENSUS_STACKED$country))
+loaded_allocation_countries <- sort(
+  unique(SSA_EARMARK_ALLOCATIONS_STACKED$country)
+)
+
+if (!identical(loaded_census_countries, loaded_allocation_countries)) {
+  stop(
+    "Loaded Census and Allocation country sets differ. No outputs were written."
+  )
+}
+if (!"COD" %in% loaded_census_countries) {
+  stop("COD did not load successfully. No outputs were written.")
+}
+```
+
+# 2. Create the analytical Allocation table
+
+`SSA_EARMARK_ALLOCATIONS` retains only direct shares of gross instrument proceeds (`share_level == 1`). Missing or other share levels are excluded and counted in the audit.
+
+```{r filter-allocation}
+allocation_stacked_with_row_id <- SSA_EARMARK_ALLOCATIONS_STACKED %>%
+  mutate(.allocation_row_id = row_number())
+
+allocation_analytical_with_row_id <- allocation_stacked_with_row_id %>%
+  filter(share_level == 1L)
+
+SSA_EARMARK_ALLOCATIONS <- allocation_analytical_with_row_id %>%
+  select(all_of(allocation_columns))
+
+make_filter_audit <- function(before, after, dataset, condition, key_column,
+                              filter_fields) {
+  countries <- sort(unique(before$country[!is_missing_value(before$country)]))
+  scopes <- c(countries, "Overall")
+
+  map_dfr(scopes, function(scope_country) {
+    before_scope <- if (scope_country == "Overall") {
+      before
+    } else {
+      before %>% filter(country == scope_country)
+    }
+    after_scope <- if (scope_country == "Overall") {
+      after
+    } else {
+      after %>% filter(country == scope_country)
+    }
+    missing_filter_row <- rep(FALSE, nrow(before_scope))
+    for (field in filter_fields) {
+      missing_filter_row <- missing_filter_row |
+        is_missing_value(before_scope[[field]])
+    }
+
+    tibble(
+      audit_type = "filter",
+      dataset = dataset,
+      country = scope_country,
+      condition_or_status = condition,
+      rows_before = nrow(before_scope),
+      rows_after = nrow(after_scope),
+      keys_before = n_distinct_country_key(before_scope, key_column),
+      keys_after = n_distinct_country_key(after_scope, key_column),
+      missing_filter_value_rows = sum(missing_filter_row)
+    )
+  })
+}
+
+allocation_filter_audit <- make_filter_audit(
+  SSA_EARMARK_ALLOCATIONS_STACKED,
+  SSA_EARMARK_ALLOCATIONS,
+  dataset = "Allocation",
+  condition = "share_level == 1",
+  key_column = "pair_id",
+  filter_fields = "share_level"
+)
+
+cat(
+  "Allocation filter: ",
+  nrow(SSA_EARMARK_ALLOCATIONS_STACKED), " rows and ",
+  n_distinct_country_key(SSA_EARMARK_ALLOCATIONS_STACKED, "pair_id"),
+  " country-pair keys before; ",
+  nrow(SSA_EARMARK_ALLOCATIONS), " rows and ",
+  n_distinct_country_key(SSA_EARMARK_ALLOCATIONS, "pair_id"),
+  " keys after.\n",
+  sep = ""
+)
+```
+
+# 3. Expand and resolve Census references
+
+The expansion starts from `SSA_EARMARK_ALLOCATIONS`, not the unfiltered stack. `census_ref` must be a JSON array of Census row IDs. Each scalar token is matched case-sensitively to Census `evidence_id` within the same country, then resolved to that Census row's `instrument_id`. No `instrument_id` fallback and no cross-country match are used.
+
+```{r parse-and-resolve-census-ref}
+parse_reference_cell <- function(country, allocation_evidence_id, pair_id,
+                                 census_ref_raw, allocation_row_id) {
+  base_row <- tibble(
+    country = country,
+    .allocation_row_id = allocation_row_id,
+    allocation_evidence_id = allocation_evidence_id,
+    pair_id = pair_id,
+    census_ref_raw = census_ref_raw
+  )
+
+  if (is.na(census_ref_raw) || str_trim(census_ref_raw) == "") {
+    return(base_row %>%
+      mutate(
+        element_position = NA_integer_,
+        ref_token = NA_character_,
+        ref_token_trimmed = NA_character_,
+        parse_status = "null_missing_raw",
+        parse_detail = "census_ref is missing or blank"
+      ))
+  }
+
+  parsed <- tryCatch(
+    jsonlite::fromJSON(census_ref_raw, simplifyVector = FALSE),
+    error = identity
+  )
+
+  if (inherits(parsed, "error")) {
+    return(base_row %>%
+      mutate(
+        element_position = NA_integer_,
+        ref_token = NA_character_,
+        ref_token_trimmed = NA_character_,
+        parse_status = "malformed_json",
+        parse_detail = conditionMessage(parsed)
+      ))
+  }
+
+  if (is.null(parsed)) {
+    return(base_row %>%
+      mutate(
+        element_position = NA_integer_,
+        ref_token = NA_character_,
+        ref_token_trimmed = NA_character_,
+        parse_status = "null_json",
+        parse_detail = "census_ref is JSON null"
+      ))
+  }
+
+  if (!is.list(parsed) || !is.null(names(parsed))) {
+    return(base_row %>%
+      mutate(
+        element_position = NA_integer_,
+        ref_token = if (!is.list(parsed)) cell_to_text(parsed) else NA_character_,
+        ref_token_trimmed = if (!is.list(parsed)) {
+          str_trim(cell_to_text(parsed))
+        } else {
+          NA_character_
+        },
+        parse_status = "malformed_non_array",
+        parse_detail = "JSON value is not an array"
+      ))
+  }
+
+  if (length(parsed) == 0L) {
+    return(base_row %>%
+      mutate(
+        element_position = NA_integer_,
+        ref_token = NA_character_,
+        ref_token_trimmed = NA_character_,
+        parse_status = "null_empty_array",
+        parse_detail = "census_ref is an empty JSON array"
+      ))
+  }
+
+  map_dfr(seq_along(parsed), function(position) {
+    element <- parsed[[position]]
+    if (is.null(element) || length(element) == 0L) {
+      return(base_row %>%
+        mutate(
+          element_position = as.integer(position),
+          ref_token = NA_character_,
+          ref_token_trimmed = NA_character_,
+          parse_status = "null_array_element",
+          parse_detail = "JSON array element is null"
+        ))
+    }
+
+    element_is_scalar <- !is.list(element) && length(element) == 1L
+    token <- if (element_is_scalar) cell_to_text(element) else NA_character_
+    token_trimmed <- if (!is.na(token)) str_trim(token) else NA_character_
+
+    base_row %>%
+      mutate(
+        element_position = as.integer(position),
+        ref_token = token,
+        ref_token_trimmed = token_trimmed,
+        parse_status = case_when(
+          !element_is_scalar ~ "malformed_non_scalar",
+          is.na(token_trimmed) || token_trimmed == "" ~
+            "malformed_empty_token",
+          TRUE ~ "parsed"
+        ),
+        parse_detail = case_when(
+          !element_is_scalar ~ "JSON array element is not a scalar",
+          is.na(token_trimmed) || token_trimmed == "" ~
+            "JSON array element is missing or blank",
+          TRUE ~ NA_character_
+        )
+      )
+  })
+}
+
+reference_tokens <- pmap_dfr(
+  allocation_analytical_with_row_id %>%
+    select(
+      country,
+      allocation_evidence_id = evidence_id,
+      pair_id,
+      census_ref_raw = census_ref,
+      allocation_row_id = .allocation_row_id
+    ),
+  parse_reference_cell
+)
+
+census_evidence_map <- SSA_CENSUS_STACKED %>%
+  mutate(
+    evidence_lookup = str_trim(evidence_id),
+    instrument_lookup = str_trim(instrument_id)
+  ) %>%
+  filter(!is_missing_value(evidence_lookup)) %>%
+  group_by(country, evidence_lookup) %>%
+  summarise(
+    same_country_match_rows = n(),
+    target_instrument_count = n_distinct(
+      instrument_lookup[!is_missing_value(instrument_lookup)]
+    ),
+    census_evidence_id_match = ifelse(
+      n() == 1L, first(evidence_lookup), NA_character_
+    ),
+    census_instrument_id_match = {
+      targets <- unique(
+        instrument_lookup[!is_missing_value(instrument_lookup)]
+      )
+      if (length(targets) == 1L) targets[[1]] else NA_character_
+    },
+    .groups = "drop"
+  )
+
+global_evidence_locations <- SSA_CENSUS_STACKED %>%
+  transmute(country, evidence_lookup = str_trim(evidence_id)) %>%
+  filter(!is_missing_value(evidence_lookup)) %>%
+  distinct(country, evidence_lookup) %>%
+  group_by(evidence_lookup) %>%
+  summarise(
+    matching_countries = paste(sort(unique(country)), collapse = "; "),
+    .groups = "drop"
+  )
+
+reference_resolution <- reference_tokens %>%
+  left_join(
+    census_evidence_map,
+    by = c("country", "ref_token_trimmed" = "evidence_lookup")
+  ) %>%
+  left_join(
+    global_evidence_locations,
+    by = c("ref_token_trimmed" = "evidence_lookup")
+  ) %>%
+  mutate(
+    same_country_match_rows = replace_na(same_country_match_rows, 0L),
+    target_instrument_count = replace_na(target_instrument_count, 0L),
+    token_country_prefix = str_match(
+      ref_token_trimmed, "^([A-Z]{3})_"
+    )[, 2],
+    expected_evidence_id_form = str_detect(
+      ref_token_trimmed,
+      "^[A-Z]{3}_.+_CEN_[0-9]+$"
+    ),
+    exact_other_country_match = same_country_match_rows == 0L &
+      !is.na(matching_countries),
+    outcome = case_when(
+      str_starts(parse_status, "null_") ~ "null",
+      str_starts(parse_status, "malformed_") ~ "malformed",
+      same_country_match_rows > 1L ~ "ambiguous",
+      same_country_match_rows == 1L & target_instrument_count > 1L ~
+        "ambiguous",
+      same_country_match_rows == 1L & target_instrument_count == 0L ~
+        "unmatched",
+      same_country_match_rows == 1L & target_instrument_count == 1L ~
+        "matched",
+      !is.na(token_country_prefix) & token_country_prefix != country ~
+        "cross_country",
+      exact_other_country_match ~ "cross_country",
+      expected_evidence_id_form ~ "unmatched",
+      TRUE ~ "malformed"
+    ),
+    resolution_status = case_when(
+      outcome == "matched" ~ "matched_same_country_evidence_id",
+      outcome == "ambiguous" ~ "ambiguous_same_country_evidence_id",
+      outcome == "cross_country" ~ "cross_country_reference",
+      outcome == "unmatched" & same_country_match_rows == 1L ~
+        "matched_evidence_missing_instrument_id",
+      outcome == "unmatched" ~ "unmatched_evidence_id",
+      outcome == "malformed" & parse_status == "parsed" ~
+        "malformed_identifier",
+      TRUE ~ parse_status
+    ),
+    census_evidence_id = ifelse(
+      outcome == "matched", census_evidence_id_match, NA_character_
+    ),
+    census_instrument_id = ifelse(
+      outcome == "matched", census_instrument_id_match, NA_character_
+    ),
+    successfully_resolved = outcome == "matched"
+  )
+
+all_reference_outcomes <- c(
+  "matched", "null", "malformed", "unmatched", "cross_country", "ambiguous"
+)
+
+reference_resolution_summary <- reference_resolution %>%
+  count(country, outcome, name = "n") %>%
+  complete(
+    country = sort(unique(reference_resolution$country)),
+    outcome = all_reference_outcomes,
+    fill = list(n = 0L)
+  ) %>%
+  pivot_wider(names_from = outcome, values_from = n, values_fill = 0L) %>%
+  bind_rows(
+    reference_resolution %>%
+      count(outcome, name = "n") %>%
+      complete(outcome = all_reference_outcomes, fill = list(n = 0L)) %>%
+      pivot_wider(names_from = outcome, values_from = n, values_fill = 0L) %>%
+      mutate(country = "Overall", .before = 1)
+  ) %>%
+  mutate(
+    n_reference_values = matched + null + malformed + unmatched +
+      cross_country + ambiguous,
+    pct_matched = ifelse(n_reference_values == 0L, NA_real_, matched /
+      n_reference_values)
+  ) %>%
+  arrange(country != "Overall", country)
+```
+
+Only successfully resolved references can enter the expanded table. When repeated source rows produce the same `country + pair_id + census_instrument_id` link, the notebook audits every differing retained column, keeps the first source-row occurrence deterministically, and removes later duplicate links as requested.
+
+```{r create-expanded-allocation}
+matched_reference_rows <- reference_resolution %>%
+  filter(successfully_resolved) %>%
+  select(
+    .allocation_row_id, element_position,
+    census_evidence_id, census_instrument_id
+  )
+
+expanded_link_candidates_all <- allocation_analytical_with_row_id %>%
+  inner_join(matched_reference_rows, by = ".allocation_row_id") %>%
+  arrange(.allocation_row_id, element_position)
+
+expanded_link_candidates <- expanded_link_candidates_all %>%
+  filter(
+    !is_missing_value(country),
+    !is_missing_value(pair_id),
+    !is_missing_value(census_instrument_id)
+  )
+
+matched_links_missing_key <- expanded_link_candidates_all %>%
+  filter(
+    is_missing_value(country) |
+      is_missing_value(pair_id) |
+      is_missing_value(census_instrument_id)
+  )
+
+duplicate_link_keys <- expanded_link_candidates %>%
+  count(country, pair_id, census_instrument_id, name = "n_source_rows") %>%
+  filter(n_source_rows > 1L)
+
+different_nonmissing_values <- function(values) {
+  if (is.character(values)) {
+    values <- values[!is.na(values) & values != ""]
+  } else {
+    values <- values[!is.na(values)]
+  }
+  n_distinct(values) > 1L
+}
+
+duplicate_link_detail <- expanded_link_candidates %>%
+  semi_join(
+    duplicate_link_keys,
+    by = c("country", "pair_id", "census_instrument_id")
+  ) %>%
+  group_by(country, pair_id, census_instrument_id) %>%
+  group_modify(function(group_data, group_keys) {
+    fields_to_check <- intersect(allocation_columns, names(group_data))
+    differing_fields <- fields_to_check[vapply(
+      group_data[fields_to_check],
+      different_nonmissing_values,
+      logical(1)
+    )]
+    conflicting_fields <- setdiff(differing_fields, "evidence_id")
+
+    tibble(
+      n_source_rows = nrow(group_data),
+      differing_retained_columns = collapse_or_na(differing_fields),
+      conflicting_retained_columns = collapse_or_na(conflicting_fields),
+      has_conflicting_retained_values = length(conflicting_fields) > 0L
+    )
+  }) %>%
+  ungroup()
+
+SSA_EARMARK_ALLOCATIONS_EXPANDED <- expanded_link_candidates %>%
+  distinct(
+    country, pair_id, census_instrument_id,
+    .keep_all = TRUE
+  ) %>%
+  select(
+    all_of(allocation_columns),
+    census_evidence_id,
+    census_instrument_id
+  )
+
+stopifnot(
+  identical(
+    names(SSA_EARMARK_ALLOCATIONS_EXPANDED),
+    c(allocation_columns, "census_evidence_id", "census_instrument_id")
+  ),
+  !any(duplicated(
+    SSA_EARMARK_ALLOCATIONS_EXPANDED %>%
+      select(country, pair_id, census_instrument_id)
+  ))
+)
+```
+
+# 4. Add `is_earmarked` and create the analytical Census table
+
+`is_earmarked` is based only on successfully resolved, level-1 Allocation links. It is added to the unfiltered Census stack before applying the requested current, non-penalty Census filter.
+
+```{r create-census-tables}
+earmarked_census_keys <- SSA_EARMARK_ALLOCATIONS_EXPANDED %>%
+  transmute(
+    country,
+    instrument_id = census_instrument_id,
+    is_earmarked = 1L
+  ) %>%
+  filter(
+    !is_missing_value(country),
+    !is_missing_value(instrument_id)
+  ) %>%
+  distinct(country, instrument_id, .keep_all = TRUE)
+
+SSA_CENSUS_STACKED <- SSA_CENSUS_STACKED %>%
+  left_join(
+    earmarked_census_keys,
+    by = c("country", "instrument_id")
+  ) %>%
+  mutate(is_earmarked = replace_na(is_earmarked, 0L)) %>%
+  select(all_of(census_columns), is_earmarked)
+
+SSA_CENSUS <- SSA_CENSUS_STACKED %>%
+  filter(in_force == 1L, is_penalty == 0L) %>%
+  select(all_of(census_columns), is_earmarked)
+
+census_filter_audit <- make_filter_audit(
+  SSA_CENSUS_STACKED,
+  SSA_CENSUS,
+  dataset = "Census",
+  condition = "in_force == 1 and is_penalty == 0",
+  key_column = "instrument_id",
+  filter_fields = c("in_force", "is_penalty")
+)
+
+cat(
+  "Census filter: ", nrow(SSA_CENSUS_STACKED), " rows and ",
+  n_distinct_country_key(SSA_CENSUS_STACKED, "instrument_id"),
+  " country-instrument keys before; ", nrow(SSA_CENSUS), " rows and ",
+  n_distinct_country_key(SSA_CENSUS, "instrument_id"),
+  " keys after.\n",
+  sep = ""
+)
+```
+
+# 5. Essential sanity checks
+
+Exactly three combined sanity tables are produced: Coverage, Key integrity, and Link/filter audit.
+
+```{r prepare-coverage-sanity}
+file_load_audit <- schema_audit %>%
+  left_join(
+    load_status,
+    by = c("dataset", "country", "relative_path")
+  ) %>%
+  left_join(
+    type_file_summary,
+    by = c("dataset", "country", "relative_path")
+  ) %>%
+  mutate(
+    final_status = case_when(
+      schema_status != "schema_ok" ~ schema_status,
+      load_status != "loaded" ~ load_status,
+      TRUE ~ "loaded"
+    )
+  )
+
+country_presence <- full_join(
+  SSA_CENSUS_STACKED %>% distinct(country) %>% mutate(in_census = TRUE),
+  SSA_EARMARK_ALLOCATIONS_STACKED %>%
+    distinct(country) %>%
+    mutate(in_allocation = TRUE),
+  by = "country"
+) %>%
+  mutate(
+    in_census = replace_na(in_census, FALSE),
+    in_allocation = replace_na(in_allocation, FALSE),
+    missing_dataset = case_when(
+      in_census & in_allocation ~ NA_character_,
+      in_census ~ "Allocation",
+      in_allocation ~ "Census",
+      TRUE ~ "Census; Allocation"
+    ),
+    status = ifelse(is.na(missing_dataset), "both", "missing_dataset")
+  ) %>%
+  arrange(country)
+
+coverage_file_summary <- file_load_audit %>%
+  group_by(dataset) %>%
+  summarise(
+    n_files_found = n(),
+    n_files_loaded = sum(final_status == "loaded"),
+    n_files_failed = sum(str_starts(final_status, "failed")),
+    n_files_duplicated = 0L,
+    n_countries = n_distinct(country[final_status == "loaded"]),
+    n_rows = sum(loaded_rows[final_status == "loaded"], na.rm = TRUE),
+    record_type = "file_summary",
+    country = "Overall",
+    status = ifelse(all(final_status == "loaded"), "complete", "incomplete"),
+    missing_dataset = NA_character_,
+    relative_path = NA_character_,
+    required_sheet = NA_character_,
+    missing_required = collapse_or_na(missing_required),
+    additional_columns = collapse_or_na(additional_columns),
+    duplicate_headers = collapse_or_na(duplicate_headers),
+    required_order_matches = all(required_order_matches),
+    type_status = ifelse(
+      all(type_status == "compatible"), "compatible", "incompatible"
+    ),
+    type_variation_fields = collapse_or_na(type_variation_fields),
+    detail = "Canonical final country workbooks",
+    .groups = "drop"
+  ) %>%
+  select(
+    record_type, dataset, country, status, n_files_found, n_files_loaded,
+    n_files_failed, n_files_duplicated, n_countries, n_rows,
+    missing_dataset, relative_path, required_sheet, missing_required,
+    additional_columns, duplicate_headers, required_order_matches,
+    type_status, type_variation_fields, detail
+  )
+
+coverage_country_files <- file_load_audit %>%
+  transmute(
+    record_type = "country_file",
+    dataset,
+    country,
+    status = final_status,
+    n_files_found = 1L,
+    n_files_loaded = as.integer(final_status == "loaded"),
+    n_files_failed = as.integer(str_starts(final_status, "failed")),
+    n_files_duplicated = 0L,
+    n_countries = 1L,
+    n_rows = loaded_rows,
+    missing_dataset = NA_character_,
+    relative_path,
+    required_sheet = sheet,
+    missing_required,
+    additional_columns,
+    duplicate_headers,
+    required_order_matches,
+    type_status,
+    type_variation_fields,
+    detail = coalesce(schema_reason, load_reason, "Loaded successfully")
+  )
+
+coverage_country_presence <- country_presence %>%
+  transmute(
+    record_type = "country_presence",
+    dataset = "Both",
+    country,
+    status,
+    n_files_found = NA_integer_,
+    n_files_loaded = NA_integer_,
+    n_files_failed = NA_integer_,
+    n_files_duplicated = NA_integer_,
+    n_countries = 1L,
+    n_rows = NA_integer_,
+    missing_dataset,
+    relative_path = NA_character_,
+    required_sheet = NA_character_,
+    missing_required = NA_character_,
+    additional_columns = NA_character_,
+    duplicate_headers = NA_character_,
+    required_order_matches = NA,
+    type_status = NA_character_,
+    type_variation_fields = NA_character_,
+    detail = paste0(
+      "in_census=", in_census, "; in_allocation=", in_allocation
+    )
+  )
+
+coverage_missing_summary <- tibble(
+  record_type = "missing_dataset_summary",
+  dataset = "Both",
+  country = "Overall",
+  status = ifelse(
+    any(!is.na(country_presence$missing_dataset)), "incomplete", "complete"
+  ),
+  n_files_found = NA_integer_,
+  n_files_loaded = NA_integer_,
+  n_files_failed = NA_integer_,
+  n_files_duplicated = NA_integer_,
+  n_countries = sum(!is.na(country_presence$missing_dataset)),
+  n_rows = NA_integer_,
+  missing_dataset = collapse_or_na(country_presence$missing_dataset),
+  relative_path = NA_character_,
+  required_sheet = NA_character_,
+  missing_required = NA_character_,
+  additional_columns = NA_character_,
+  duplicate_headers = NA_character_,
+  required_order_matches = NA,
+  type_status = NA_character_,
+  type_variation_fields = NA_character_,
+  detail = collapse_or_na(
+    country_presence$country[!is.na(country_presence$missing_dataset)]
+  )
+)
+
+coverage_sanity <- bind_rows(
+  coverage_file_summary,
+  coverage_country_files,
+  coverage_country_presence,
+  coverage_missing_summary
+) %>%
+  arrange(factor(record_type, levels = c(
+    "file_summary", "country_file", "country_presence",
+    "missing_dataset_summary"
+  )), dataset, country)
+```
+
+```{r prepare-key-integrity}
+make_key_integrity <- function(data, dataset_scope, dataset, key_name,
+                               key_columns, interpretation) {
+  countries <- sort(unique(data$country[!is_missing_value(data$country)]))
+  scopes <- c(countries, "Overall")
+
+  map_dfr(scopes, function(scope_country) {
+    scoped <- if (scope_country == "Overall") {
+      data
+    } else {
+      data %>% filter(country == scope_country)
+    }
+    missing_country <- is_missing_value(scoped$country)
+    missing_id <- rep(FALSE, nrow(scoped))
+    for (field in key_columns) {
+      missing_id <- missing_id | is_missing_value(scoped[[field]])
+    }
+    valid <- !missing_country & !missing_id
+    valid_keys <- scoped[valid, c("country", key_columns), drop = FALSE] %>%
+      count(across(everything()), name = "key_rows")
+    duplicate_keys <- valid_keys %>% filter(key_rows > 1L)
+
+    tibble(
+      dataset_scope = dataset_scope,
+      dataset = dataset,
+      country = scope_country,
+      key_name = key_name,
+      n_rows = nrow(scoped),
+      n_missing_country_rows = sum(missing_country),
+      n_missing_id_rows = sum(missing_id),
+      n_missing_key_rows = sum(missing_country | missing_id),
+      n_distinct_nonmissing_keys = nrow(valid_keys),
+      n_duplicate_key_groups = nrow(duplicate_keys),
+      n_duplicate_key_rows = sum(duplicate_keys$key_rows),
+      n_excess_duplicate_rows = sum(duplicate_keys$key_rows - 1L),
+      interpretation = interpretation
+    )
+  })
+}
+
+key_integrity <- bind_rows(
+  make_key_integrity(
+    SSA_CENSUS_STACKED, "SSA_CENSUS_STACKED", "Census",
+    "country + evidence_id", "evidence_id",
+    "Census evidence-row identifier"
+  ),
+  make_key_integrity(
+    SSA_CENSUS_STACKED, "SSA_CENSUS_STACKED", "Census",
+    "country + instrument_id", "instrument_id",
+    "Census instrument key"
+  ),
+  make_key_integrity(
+    SSA_EARMARK_ALLOCATIONS_STACKED,
+    "SSA_EARMARK_ALLOCATIONS_STACKED", "Allocation",
+    "country + evidence_id", "evidence_id",
+    "Allocation evidence-row identifier"
+  ),
+  make_key_integrity(
+    SSA_EARMARK_ALLOCATIONS_STACKED,
+    "SSA_EARMARK_ALLOCATIONS_STACKED", "Allocation",
+    "country + instrument_id", "instrument_id",
+    "Repeated values are expected when one instrument has several channels"
+  ),
+  make_key_integrity(
+    SSA_EARMARK_ALLOCATIONS_STACKED,
+    "SSA_EARMARK_ALLOCATIONS_STACKED", "Allocation",
+    "country + pair_id", "pair_id",
+    "Allocation channel key"
+  ),
+  make_key_integrity(
+    SSA_CENSUS, "SSA_CENSUS", "Census",
+    "country + evidence_id", "evidence_id",
+    "Analytical Census evidence-row identifier"
+  ),
+  make_key_integrity(
+    SSA_CENSUS, "SSA_CENSUS", "Census",
+    "country + instrument_id", "instrument_id",
+    "Analytical Census instrument key"
+  ),
+  make_key_integrity(
+    SSA_EARMARK_ALLOCATIONS,
+    "SSA_EARMARK_ALLOCATIONS", "Allocation",
+    "country + evidence_id", "evidence_id",
+    "Analytical Allocation evidence-row identifier"
+  ),
+  make_key_integrity(
+    SSA_EARMARK_ALLOCATIONS,
+    "SSA_EARMARK_ALLOCATIONS", "Allocation",
+    "country + instrument_id", "instrument_id",
+    "Repeated values are expected when one instrument has several channels"
+  ),
+  make_key_integrity(
+    SSA_EARMARK_ALLOCATIONS,
+    "SSA_EARMARK_ALLOCATIONS", "Allocation",
+    "country + pair_id", "pair_id",
+    "Analytical Allocation channel key"
+  ),
+  make_key_integrity(
+    SSA_EARMARK_ALLOCATIONS_EXPANDED,
+    "SSA_EARMARK_ALLOCATIONS_EXPANDED", "Allocation",
+    "country + pair_id + census_instrument_id",
+    c("pair_id", "census_instrument_id"),
+    "Required expanded-link grain"
+  )
+) %>%
+  arrange(dataset_scope, key_name, country != "Overall", country)
+```
+
+```{r prepare-link-filter-audit}
+reference_summary_audit <- reference_resolution_summary %>%
+  transmute(
+    audit_type = "reference_summary",
+    dataset = "Allocation",
+    country,
+    condition_or_status = "census_ref resolution",
+    n_reference_values,
+    matched,
+    null,
+    malformed,
+    unmatched,
+    cross_country,
+    ambiguous,
+    pct_matched,
+    rows_before = NA_integer_,
+    rows_after = NA_integer_,
+    keys_before = NA_integer_,
+    keys_after = NA_integer_,
+    missing_filter_value_rows = NA_integer_,
+    matched_link_candidate_rows = NA_integer_,
+    expanded_link_rows = NA_integer_,
+    duplicate_link_rows_removed = NA_integer_,
+    duplicate_link_groups = NA_integer_,
+    conflicting_duplicate_link_groups = NA_integer_,
+    reference_examples = NA_character_,
+    pair_examples = NA_character_,
+    conflicting_fields = NA_character_,
+    detail = "Occurrence-level reference counts; matched only within country"
+  )
+
+reference_issue_audit <- reference_resolution %>%
+  filter(outcome != "matched") %>%
+  group_by(country, outcome) %>%
+  summarise(
+    n_reference_values = n(),
+    reference_examples = collapse_or_na(
+      unique(coalesce(ref_token_trimmed, census_ref_raw))
+    ),
+    pair_examples = collapse_or_na(unique(pair_id)),
+    detail = collapse_or_na(unique(resolution_status)),
+    .groups = "drop"
+  ) %>%
+  transmute(
+    audit_type = "reference_issue_detail",
+    dataset = "Allocation",
+    country,
+    condition_or_status = outcome,
+    n_reference_values,
+    matched = NA_integer_,
+    null = NA_integer_,
+    malformed = NA_integer_,
+    unmatched = NA_integer_,
+    cross_country = NA_integer_,
+    ambiguous = NA_integer_,
+    pct_matched = NA_real_,
+    rows_before = NA_integer_,
+    rows_after = NA_integer_,
+    keys_before = NA_integer_,
+    keys_after = NA_integer_,
+    missing_filter_value_rows = NA_integer_,
+    matched_link_candidate_rows = NA_integer_,
+    expanded_link_rows = NA_integer_,
+    duplicate_link_rows_removed = NA_integer_,
+    duplicate_link_groups = NA_integer_,
+    conflicting_duplicate_link_groups = NA_integer_,
+    reference_examples,
+    pair_examples,
+    conflicting_fields = NA_character_,
+    detail
+  )
+
+filter_audit_rows <- bind_rows(
+  allocation_filter_audit,
+  census_filter_audit
+) %>%
+  transmute(
+    audit_type,
+    dataset,
+    country,
+    condition_or_status,
+    n_reference_values = NA_integer_,
+    matched = NA_integer_,
+    null = NA_integer_,
+    malformed = NA_integer_,
+    unmatched = NA_integer_,
+    cross_country = NA_integer_,
+    ambiguous = NA_integer_,
+    pct_matched = NA_real_,
+    rows_before,
+    rows_after,
+    keys_before,
+    keys_after,
+    missing_filter_value_rows,
+    matched_link_candidate_rows = NA_integer_,
+    expanded_link_rows = NA_integer_,
+    duplicate_link_rows_removed = NA_integer_,
+    duplicate_link_groups = NA_integer_,
+    conflicting_duplicate_link_groups = NA_integer_,
+    reference_examples = NA_character_,
+    pair_examples = NA_character_,
+    conflicting_fields = NA_character_,
+    detail = "Distinct keys exclude missing country or ID values"
+  )
+
+link_audit_countries <- sort(unique(SSA_EARMARK_ALLOCATIONS$country))
+link_dedup_audit <- map_dfr(
+  c(link_audit_countries, "Overall"),
+  function(scope_country) {
+    candidate_scope <- if (scope_country == "Overall") {
+      expanded_link_candidates
+    } else {
+      expanded_link_candidates %>% filter(country == scope_country)
+    }
+    expanded_scope <- if (scope_country == "Overall") {
+      SSA_EARMARK_ALLOCATIONS_EXPANDED
+    } else {
+      SSA_EARMARK_ALLOCATIONS_EXPANDED %>% filter(country == scope_country)
+    }
+    duplicate_scope <- if (scope_country == "Overall") {
+      duplicate_link_detail
+    } else {
+      duplicate_link_detail %>% filter(country == scope_country)
+    }
+    missing_key_scope <- if (scope_country == "Overall") {
+      matched_links_missing_key
+    } else {
+      matched_links_missing_key %>% filter(country == scope_country)
+    }
+
+    tibble(
+      audit_type = "expanded_link_deduplication",
+      dataset = "Allocation",
+      country = scope_country,
+      condition_or_status = "one country + pair_id + census_instrument_id link",
+      n_reference_values = NA_integer_,
+      matched = NA_integer_,
+      null = NA_integer_,
+      malformed = NA_integer_,
+      unmatched = NA_integer_,
+      cross_country = NA_integer_,
+      ambiguous = NA_integer_,
+      pct_matched = NA_real_,
+      rows_before = NA_integer_,
+      rows_after = NA_integer_,
+      keys_before = NA_integer_,
+      keys_after = NA_integer_,
+      missing_filter_value_rows = NA_integer_,
+      matched_link_candidate_rows = nrow(candidate_scope),
+      expanded_link_rows = nrow(expanded_scope),
+      duplicate_link_rows_removed = nrow(candidate_scope) - nrow(expanded_scope),
+      duplicate_link_groups = nrow(duplicate_scope),
+      conflicting_duplicate_link_groups = sum(
+        duplicate_scope$has_conflicting_retained_values
+      ),
+      reference_examples = NA_character_,
+      pair_examples = collapse_or_na(unique(duplicate_scope$pair_id)),
+      conflicting_fields = if (nrow(duplicate_scope) == 0L) {
+        NA_character_
+      } else {
+        paste(
+          paste0(
+            duplicate_scope$pair_id, " -> ",
+            duplicate_scope$conflicting_retained_columns
+          ),
+          collapse = " | "
+        )
+      },
+      detail = paste0(
+        "First source-row occurrence retained after audit; matched candidates ",
+        "missing a complete link key=", nrow(missing_key_scope)
+      )
+    )
+  }
+)
+
+link_filter_audit <- bind_rows(
+  reference_summary_audit,
+  reference_issue_audit,
+  filter_audit_rows,
+  link_dedup_audit
+) %>%
+  arrange(
+    factor(audit_type, levels = c(
+      "filter", "reference_summary", "reference_issue_detail",
+      "expanded_link_deduplication"
+    )),
+    dataset,
+    country != "Overall",
+    country,
+    condition_or_status
+  )
+```
+
+## Coverage
+
+```{r display-coverage-sanity}
+display_table(coverage_sanity)
+```
+
+## Key integrity
+
+```{r display-key-integrity}
+display_table(key_integrity)
+```
+
+## Link and filter audit
+
+```{r display-link-filter-audit}
+display_table(link_filter_audit)
+```
+
+# 6. Country and legal-corpus coverage
+
+Coverage uses the unfiltered stacked datasets. Distinct blank `document_id` values are not counted. Source year values are preserved, deduplicated, sorted, and joined with `"; "`.
+
+```{r corpus-coverage}
+sort_year_values <- function(values) {
+  values <- unique(values[!is_missing_value(values)])
+  if (length(values) == 0L) return(NA_character_)
+  paste(sort(values), collapse = "; ")
+}
+
+make_corpus_coverage <- function(data, dataset_name) {
+  data %>%
+    group_by(country) %>%
+    summarise(
+      n_documents = n_distinct(
+        document_id[!is_missing_value(document_id)]
+      ),
+      document_years = sort_year_values(document_year),
+      corpus_type = case_when(
+        n_documents == 1L ~ "single_document",
+        n_documents > 1L ~ "multi_document",
+        TRUE ~ NA_character_
+      ),
+      .groups = "drop"
+    ) %>%
+    mutate(dataset = dataset_name, .before = 1) %>%
+    select(dataset, country, n_documents, document_years, corpus_type)
+}
+
+country_corpus_coverage <- bind_rows(
+  make_corpus_coverage(SSA_CENSUS_STACKED, "Census"),
+  make_corpus_coverage(
+    SSA_EARMARK_ALLOCATIONS_STACKED, "Allocation"
+  )
+) %>%
+  arrange(dataset, country)
+
+display_table(country_corpus_coverage)
+```
+
+# 7. Export and verify the five datasets
+
+```{r export-csv-files}
+write_csv(SSA_CENSUS_STACKED, output_paths$census_stacked, na = "")
+write_csv(
+  SSA_EARMARK_ALLOCATIONS_STACKED,
+  output_paths$allocation_stacked,
+  na = ""
+)
+write_csv(SSA_CENSUS, output_paths$census, na = "")
+write_csv(SSA_EARMARK_ALLOCATIONS, output_paths$allocation, na = "")
+write_csv(
+  SSA_EARMARK_ALLOCATIONS_EXPANDED,
+  output_paths$allocation_expanded,
+  na = ""
+)
+write_csv(
+  country_corpus_coverage,
+  output_paths$corpus_coverage,
+  na = ""
+)
+
+verify_csv <- function(path, expected_rows, expected_columns) {
+  saved <- read_csv(
+    path,
+    col_types = cols(.default = col_character()),
+    show_col_types = FALSE,
+    progress = FALSE
+  )
+  stopifnot(
+    nrow(saved) == expected_rows,
+    identical(names(saved), expected_columns)
+  )
+  invisible(TRUE)
+}
+
+verify_csv(
+  output_paths$census_stacked,
+  nrow(SSA_CENSUS_STACKED),
+  c(census_columns, "is_earmarked")
+)
+verify_csv(
+  output_paths$allocation_stacked,
+  nrow(SSA_EARMARK_ALLOCATIONS_STACKED),
+  allocation_columns
+)
+verify_csv(
+  output_paths$census,
+  nrow(SSA_CENSUS),
+  c(census_columns, "is_earmarked")
+)
+verify_csv(
+  output_paths$allocation,
+  nrow(SSA_EARMARK_ALLOCATIONS),
+  allocation_columns
+)
+verify_csv(
+  output_paths$allocation_expanded,
+  nrow(SSA_EARMARK_ALLOCATIONS_EXPANDED),
+  c(allocation_columns, "census_evidence_id", "census_instrument_id")
+)
+verify_csv(
+  output_paths$corpus_coverage,
+  nrow(country_corpus_coverage),
+  c("dataset", "country", "n_documents", "document_years", "corpus_type")
+)
+```
+
+```{r stage-sanity-workbook, include=FALSE}
+serialize_table <- function(data, name) {
+  rows <- map(seq_len(nrow(data)), function(row_number) {
+    set_names(
+      map(data, function(column) {
+        value <- column[[row_number]]
+        if (length(value) == 0L || is.na(value)) NA else unname(value)
+      }),
+      names(data)
+    )
+  })
+
+  list(name = name, columns = names(data), rows = rows)
+}
+
+workbook_tables <- list(
+  coverage = coverage_sanity,
+  key_integrity = key_integrity,
+  link_filter_audit = link_filter_audit
+)
+
+workbook_manifest <- list(
+  title = "SSA stack sanity checks",
+  generated_at = format(Sys.time(), "%Y-%m-%d %H:%M:%S %Z"),
+  output_path = normalizePath(
+    output_paths$sanity_workbook, winslash = "/", mustWork = FALSE
+  ),
+  sheets = imap(workbook_tables, serialize_table)
+)
+
+write_json(
+  workbook_manifest,
+  manifest_path,
+  auto_unbox = TRUE,
+  pretty = TRUE,
+  na = "null",
+  digits = NA
+)
+```
+
+# 8. Run summary
+
+```{r run-summary, results='asis'}
+overall_reference_summary <- reference_resolution_summary %>%
+  filter(country == "Overall")
+
+cat(
+  "- Included countries (", length(loaded_census_countries), "): ",
+  paste(loaded_census_countries, collapse = ", "), ".\n",
+  "- Stacked rows: Census ", nrow(SSA_CENSUS_STACKED),
+  "; Allocation ", nrow(SSA_EARMARK_ALLOCATIONS_STACKED), ".\n",
+  "- Analytical rows: Census ", nrow(SSA_CENSUS),
+  "; Allocation ", nrow(SSA_EARMARK_ALLOCATIONS),
+  "; expanded links ", nrow(SSA_EARMARK_ALLOCATIONS_EXPANDED), ".\n",
+  "- Reference outcomes: matched ", overall_reference_summary$matched,
+  "; null ", overall_reference_summary$null,
+  "; malformed ", overall_reference_summary$malformed,
+  "; unmatched ", overall_reference_summary$unmatched,
+  "; cross-country ", overall_reference_summary$cross_country,
+  "; ambiguous ", overall_reference_summary$ambiguous, ".\n",
+  "- Duplicate expanded-link rows removed: ",
+  nrow(expanded_link_candidates) - nrow(SSA_EARMARK_ALLOCATIONS_EXPANDED),
+  "; duplicate-link groups with conflicting retained values: ",
+  sum(duplicate_link_detail$has_conflicting_retained_values), ".\n",
+  sep = ""
+)
+```
+
+The three sanity tables were staged for `analysis/tables/01_stack_sanity_checks.xlsx`. Workbook authoring and visual verification use the project's spreadsheet tooling after the notebook render completes.

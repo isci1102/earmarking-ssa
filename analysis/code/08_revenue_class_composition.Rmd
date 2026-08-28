@@ -1,0 +1,1269 @@
+---
+title: "Revenue sources underlying statutory allocation links"
+author: "IMF research project"
+date: "`r format(Sys.Date(), '%Y-%m-%d')`"
+output:
+  html_document:
+    toc: true
+    toc_depth: 3
+    df_print: paged
+---
+
+This notebook attaches the requested revenue classification to the analytical
+Census and expanded allocation-link tables. It then describes the composition
+of statutory allocation links by revenue class. The database is a **de jure**
+legal inventory; the counts and shares below do not measure revenue amounts,
+collections, transfers, disbursements, or expenditure execution.
+
+```{r setup, include=FALSE}
+if (.Platform$OS.type == "windows") {
+  active_utf8_locale <- Sys.setlocale(
+    "LC_CTYPE",
+    "English_United States.utf8"
+  )
+  if (identical(active_utf8_locale, "")) {
+    stop("A UTF-8 locale is required to preserve accented legal text.")
+  }
+}
+
+input_path <- knitr::current_input(dir = TRUE)
+project_root <- normalizePath(
+  file.path(dirname(input_path), "..", ".."),
+  winslash = "/",
+  mustWork = TRUE
+)
+
+knitr::opts_knit$set(root.dir = project_root)
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+
+library(dplyr)
+library(tidyr)
+library(readr)
+library(readxl)
+library(stringr)
+library(tibble)
+library(ggplot2)
+library(scales)
+library(knitr)
+
+options(stringsAsFactors = FALSE, scipen = 999)
+
+input_paths <- c(
+  census = file.path(
+    project_root, "data", "derived", "SSA_CENSUS.csv"
+  ),
+  expanded = file.path(
+    project_root,
+    "data",
+    "derived",
+    "SSA_EARMARK_ALLOCATIONS_EXPANDED.csv"
+  ),
+  mapping = file.path(
+    project_root, "data", "revenue_class_mapping.xlsx"
+  )
+)
+
+output_paths <- c(
+  census = input_paths[["census"]],
+  expanded = input_paths[["expanded"]],
+  summary = file.path(
+    project_root,
+    "analysis",
+    "tables",
+    "general",
+    "08_revenue_class_summary.csv"
+  ),
+  all_plot_data = file.path(
+    project_root,
+    "analysis",
+    "tables",
+    "general",
+    "08_revenue_class_all.csv"
+  ),
+  earmarked_plot_data = file.path(
+    project_root,
+    "analysis",
+    "tables",
+    "partial_exclusive",
+    "08_revenue_class_partial_exclusive.csv"
+  ),
+  all_figure = file.path(
+    project_root,
+    "analysis",
+    "figures",
+    "general",
+    "08_revenue_class_all.png"
+  ),
+  earmarked_figure = file.path(
+    project_root,
+    "analysis",
+    "figures",
+    "partial_exclusive",
+    "08_revenue_class_partial_exclusive.png"
+  )
+)
+
+for (directory in unique(dirname(output_paths))) {
+  dir.create(directory, recursive = TRUE, showWarnings = FALSE)
+}
+
+requested_classification_columns <- c(
+  "revenue_class",
+  "revenue_subclass"
+)
+partial_exclusive_statuses <- c(
+  "partial_earmark",
+  "exclusive_earmark"
+)
+main_blue <- "#1F4E79"
+
+read_all_character <- function(path) {
+  read_csv(
+    path,
+    col_types = cols(.default = col_character()),
+    na = "",
+    trim_ws = FALSE,
+    name_repair = "minimal",
+    show_col_types = FALSE,
+    progress = FALSE
+  )
+}
+
+display_table <- function(data, digits = 6) {
+  if (nrow(data) == 0L) {
+    cat("No rows to report.\n")
+  } else {
+    print(knitr::kable(data, digits = digits, row.names = FALSE))
+    cat("\n")
+  }
+}
+
+is_missing_text <- function(values) {
+  is.na(values) | str_trim(as.character(values)) == ""
+}
+
+remove_previous_classification <- function(data, dataset_name) {
+  positions <- match(requested_classification_columns, names(data))
+  present <- !is.na(positions)
+
+  if (any(present) && !all(present)) {
+    stop(
+      dataset_name,
+      " contains only one of revenue_class and revenue_subclass."
+    )
+  }
+
+  if (all(present)) {
+    expected_positions <- (ncol(data) - 1L):ncol(data)
+    if (!identical(as.integer(positions), as.integer(expected_positions))) {
+      stop(
+        dataset_name,
+        " has prior revenue classifications outside the final two columns."
+      )
+    }
+    return(data %>% select(-all_of(requested_classification_columns)))
+  }
+
+  data
+}
+
+same_existing_values_and_order <- function(before, after) {
+  old_columns <- names(before)
+  identical(names(after)[seq_along(old_columns)], old_columns) &&
+    nrow(before) == nrow(after) &&
+    all(vapply(
+      old_columns,
+      function(column) identical(before[[column]], after[[column]]),
+      logical(1)
+    ))
+}
+
+missing_by_column <- function(data) {
+  vapply(data, function(column) sum(is.na(column)), integer(1))
+}
+
+duplicate_row_count <- function(data) {
+  sum(duplicated(as.data.frame(data, stringsAsFactors = FALSE)))
+}
+
+make_preservation_checks <- function(dataset_name, before_data, after_data) {
+  old_columns <- names(before_data)
+  old_values_same <- same_existing_values_and_order(before_data, after_data)
+  old_missing_same <- identical(
+    missing_by_column(before_data),
+    missing_by_column(after_data %>% select(all_of(old_columns)))
+  )
+
+  tibble(
+    dataset = dataset_name,
+    check = c(
+      "rows before = rows after",
+      "existing columns unchanged and in the same order",
+      "existing values and row order unchanged",
+      "existing-column missingness unchanged",
+      "no duplicate rows introduced in existing fields",
+      "output is original columns plus two appended classifications"
+    ),
+    before = c(
+      as.character(nrow(before_data)),
+      paste0(length(old_columns), " existing columns"),
+      "existing field vectors",
+      "per-column missing counts",
+      as.character(duplicate_row_count(before_data)),
+      paste(old_columns, collapse = "; ")
+    ),
+    after = c(
+      as.character(nrow(after_data)),
+      paste0(length(old_columns), " existing columns"),
+      if_else(old_values_same, "identical", "changed"),
+      if_else(old_missing_same, "identical", "changed"),
+      as.character(duplicate_row_count(
+        after_data %>% select(all_of(old_columns))
+      )),
+      paste(names(after_data), collapse = "; ")
+    ),
+    passed = c(
+      nrow(before_data) == nrow(after_data),
+      identical(names(after_data)[seq_along(old_columns)], old_columns),
+      old_values_same,
+      old_missing_same,
+      duplicate_row_count(before_data) == duplicate_row_count(
+        after_data %>% select(all_of(old_columns))
+      ),
+      identical(
+        names(after_data),
+        c(old_columns, requested_classification_columns)
+      )
+    )
+  )
+}
+
+theme_revenue_class <- theme_minimal(base_size = 14) +
+  theme(
+    plot.title.position = "plot",
+    plot.title = element_text(
+      face = "bold",
+      colour = "#222222",
+      size = 18
+    ),
+    plot.subtitle = element_text(
+      colour = "#4D4D4D",
+      size = 13,
+      margin = margin(b = 10)
+    ),
+    plot.caption = element_text(
+      colour = "#666666",
+      hjust = 0,
+      size = 10,
+      margin = margin(t = 10)
+    ),
+    axis.title = element_text(
+      face = "bold",
+      colour = "#333333",
+      size = 13
+    ),
+    axis.text.x = element_text(colour = "#333333", size = 12),
+    axis.text.y = element_text(colour = "#333333", size = 12),
+    panel.grid.minor = element_blank(),
+    panel.grid.major.y = element_blank(),
+    plot.margin = margin(12, 24, 12, 12)
+  )
+```
+
+# 1. Load and validate inputs
+
+The two CSV files are read entirely as character data so their existing
+identifiers, legal text, missing cells, and row order can be preserved exactly.
+
+```{r load-inputs}
+if (!all(file.exists(input_paths))) {
+  stop(
+    "Missing required input file(s): ",
+    paste(input_paths[!file.exists(input_paths)], collapse = "; ")
+  )
+}
+
+census_loaded <- read_all_character(input_paths[["census"]])
+expanded_loaded <- read_all_character(input_paths[["expanded"]])
+
+SSA_CENSUS_before <- remove_previous_classification(
+  census_loaded,
+  "SSA_CENSUS"
+)
+SSA_EARMARK_ALLOCATIONS_EXPANDED_before <- remove_previous_classification(
+  expanded_loaded,
+  "SSA_EARMARK_ALLOCATIONS_EXPANDED"
+)
+
+required_census_columns <- c(
+  "country",
+  "evidence_id",
+  "instrument_id",
+  "instrument_nature"
+)
+required_expanded_columns <- c(
+  "country",
+  "pair_id",
+  "census_evidence_id",
+  "census_instrument_id",
+  "earmark_status"
+)
+
+missing_census_columns <- setdiff(
+  required_census_columns,
+  names(SSA_CENSUS_before)
+)
+missing_expanded_columns <- setdiff(
+  required_expanded_columns,
+  names(SSA_EARMARK_ALLOCATIONS_EXPANDED_before)
+)
+
+input_inventory <- tibble(
+  dataset = c("SSA_CENSUS", "SSA_EARMARK_ALLOCATIONS_EXPANDED"),
+  n_rows = c(
+    nrow(SSA_CENSUS_before),
+    nrow(SSA_EARMARK_ALLOCATIONS_EXPANDED_before)
+  ),
+  n_columns_before_classification = c(
+    ncol(SSA_CENSUS_before),
+    ncol(SSA_EARMARK_ALLOCATIONS_EXPANDED_before)
+  ),
+  missing_required_columns = c(
+    if_else(
+      length(missing_census_columns) == 0L,
+      NA_character_,
+      paste(missing_census_columns, collapse = "; ")
+    ),
+    if_else(
+      length(missing_expanded_columns) == 0L,
+      NA_character_,
+      paste(missing_expanded_columns, collapse = "; ")
+    )
+  )
+)
+
+if (length(missing_census_columns) > 0L ||
+    length(missing_expanded_columns) > 0L) {
+  print(input_inventory)
+  stop("One or more required input columns are missing.")
+}
+```
+
+```{r display-input-inventory}
+display_table(input_inventory)
+```
+
+# 2. Inspect and validate the revenue mapping
+
+The workbook is expected to provide one exact mapping for each stored
+`instrument_nature`. Matching is exact; no fuzzy, translated, or manually
+inferred classifications are introduced.
+
+```{r load-and-audit-mapping}
+mapping_sheets <- excel_sheets(input_paths[["mapping"]])
+if (length(mapping_sheets) != 1L) {
+  stop(
+    "The revenue mapping workbook must contain exactly one sheet; found: ",
+    paste(mapping_sheets, collapse = "; ")
+  )
+}
+
+revenue_mapping_loaded <- read_excel(
+  input_paths[["mapping"]],
+  sheet = mapping_sheets[[1]],
+  col_types = "text",
+  .name_repair = "minimal"
+)
+
+required_mapping_columns <- c(
+  "instrument_nature",
+  "revenue_class",
+  "revenue_subclass"
+)
+missing_mapping_columns <- setdiff(
+  required_mapping_columns,
+  names(revenue_mapping_loaded)
+)
+additional_mapping_columns <- setdiff(
+  names(revenue_mapping_loaded),
+  required_mapping_columns
+)
+
+mapping_schema_audit <- tibble(
+  workbook = "data/revenue_class_mapping.xlsx",
+  sheet = mapping_sheets[[1]],
+  n_rows = nrow(revenue_mapping_loaded),
+  n_columns = ncol(revenue_mapping_loaded),
+  missing_columns = if_else(
+    length(missing_mapping_columns) == 0L,
+    NA_character_,
+    paste(missing_mapping_columns, collapse = "; ")
+  ),
+  additional_columns = if_else(
+    length(additional_mapping_columns) == 0L,
+    NA_character_,
+    paste(additional_mapping_columns, collapse = "; ")
+  )
+)
+
+if (length(missing_mapping_columns) > 0L) {
+  print(mapping_schema_audit)
+  stop("The mapping workbook is missing required columns.")
+}
+
+mapping_missing_fields <- revenue_mapping_loaded %>%
+  transmute(
+    instrument_nature,
+    revenue_class,
+    revenue_subclass,
+    missing_instrument_nature = is_missing_text(instrument_nature),
+    missing_revenue_class = is_missing_text(revenue_class),
+    missing_revenue_subclass = is_missing_text(revenue_subclass)
+  ) %>%
+  filter(
+    missing_instrument_nature |
+      missing_revenue_class |
+      missing_revenue_subclass
+  )
+
+mapping_duplicate_keys <- revenue_mapping_loaded %>%
+  filter(!is_missing_text(instrument_nature)) %>%
+  count(instrument_nature, name = "n_mapping_rows") %>%
+  filter(n_mapping_rows > 1L) %>%
+  arrange(desc(n_mapping_rows), instrument_nature)
+
+mapping_conflicts <- revenue_mapping_loaded %>%
+  filter(!is_missing_text(instrument_nature)) %>%
+  distinct(instrument_nature, revenue_class, revenue_subclass) %>%
+  count(instrument_nature, name = "n_distinct_mappings") %>%
+  filter(n_distinct_mappings > 1L) %>%
+  arrange(desc(n_distinct_mappings), instrument_nature)
+
+if (any(is_missing_text(revenue_mapping_loaded$instrument_nature)) ||
+    nrow(mapping_duplicate_keys) > 0L ||
+    nrow(mapping_conflicts) > 0L) {
+  print(mapping_missing_fields)
+  print(mapping_duplicate_keys)
+  print(mapping_conflicts)
+  stop(
+    "The mapping key is missing, duplicated, or ambiguous. ",
+    "No derived file was changed."
+  )
+}
+
+revenue_mapping <- revenue_mapping_loaded %>%
+  select(all_of(required_mapping_columns))
+```
+
+```{r display-mapping-audit}
+display_table(mapping_schema_audit)
+display_table(mapping_missing_fields)
+display_table(mapping_duplicate_keys)
+display_table(mapping_conflicts)
+```
+
+# 3. Append revenue classifications to Census
+
+Unmatched `instrument_nature` values are reported and left unclassified. The
+original Census fields and row order remain unchanged.
+
+```{r audit-unmatched-instrument-natures}
+unmatched_instrument_nature <- SSA_CENSUS_before %>%
+  anti_join(
+    revenue_mapping %>% select(instrument_nature),
+    by = "instrument_nature"
+  ) %>%
+  mutate(
+    instrument_nature_display = if_else(
+      is_missing_text(instrument_nature),
+      "Missing",
+      instrument_nature
+    )
+  ) %>%
+  count(
+    country,
+    instrument_nature = instrument_nature_display,
+    name = "n_census_rows"
+  ) %>%
+  arrange(country, instrument_nature)
+
+instrument_nature_mapping_audit <- tibble(
+  check = c(
+    "Census rows",
+    "distinct non-missing Census instrument_nature values",
+    "matched Census rows",
+    "unmatched Census rows",
+    "unmatched distinct instrument_nature values"
+  ),
+  value = c(
+    nrow(SSA_CENSUS_before),
+    n_distinct(
+      SSA_CENSUS_before$instrument_nature[
+        !is_missing_text(SSA_CENSUS_before$instrument_nature)
+      ]
+    ),
+    nrow(SSA_CENSUS_before) - sum(unmatched_instrument_nature$n_census_rows),
+    sum(unmatched_instrument_nature$n_census_rows),
+    nrow(unmatched_instrument_nature)
+  )
+)
+```
+
+```{r display-unmatched-instrument-natures}
+display_table(instrument_nature_mapping_audit)
+display_table(unmatched_instrument_nature)
+```
+
+```{r classify-census}
+SSA_CENSUS <- SSA_CENSUS_before %>%
+  mutate(.original_row_order = row_number()) %>%
+  left_join(
+    revenue_mapping,
+    by = "instrument_nature",
+    relationship = "many-to-one"
+  ) %>%
+  arrange(.original_row_order) %>%
+  select(
+    all_of(names(SSA_CENSUS_before)),
+    all_of(requested_classification_columns)
+  )
+
+census_prewrite_checks <- make_preservation_checks(
+  "SSA_CENSUS",
+  SSA_CENSUS_before,
+  SSA_CENSUS
+)
+
+if (!all(census_prewrite_checks$passed)) {
+  print(census_prewrite_checks %>% filter(!passed))
+  stop("Census preservation checks failed; no output was written.")
+}
+```
+
+# 4. Append Census classifications to expanded allocation links
+
+The join uses `country + census_evidence_id = evidence_id`. A matched Census
+row must also carry the same instrument identifier as the expanded link.
+
+```{r validate-census-join-key}
+census_lookup_key_audit <- SSA_CENSUS %>%
+  summarise(
+    n_rows = n(),
+    missing_country = sum(is_missing_text(country)),
+    missing_evidence_id = sum(is_missing_text(evidence_id)),
+    n_duplicate_country_evidence_keys = nrow(
+      SSA_CENSUS %>%
+        count(country, evidence_id, name = "n_rows") %>%
+        filter(n_rows > 1L)
+    )
+  )
+
+duplicate_census_lookup_keys <- SSA_CENSUS %>%
+  count(country, evidence_id, name = "n_rows") %>%
+  filter(n_rows > 1L) %>%
+  arrange(desc(n_rows), country, evidence_id)
+
+if (census_lookup_key_audit$missing_country > 0L ||
+    census_lookup_key_audit$missing_evidence_id > 0L ||
+    nrow(duplicate_census_lookup_keys) > 0L) {
+  print(census_lookup_key_audit)
+  print(duplicate_census_lookup_keys)
+  stop(
+    "The Census join key is incomplete or ambiguous. ",
+    "No expanded file was changed."
+  )
+}
+```
+
+```{r join-expanded-classification}
+census_classification_lookup <- SSA_CENSUS %>%
+  transmute(
+    country,
+    census_evidence_id = evidence_id,
+    census_instrument_id_from_census = instrument_id,
+    revenue_class,
+    revenue_subclass,
+    census_match_found = TRUE
+  )
+
+expanded_joined <- SSA_EARMARK_ALLOCATIONS_EXPANDED_before %>%
+  mutate(.original_row_order = row_number()) %>%
+  left_join(
+    census_classification_lookup,
+    by = c("country", "census_evidence_id"),
+    relationship = "many-to-one"
+  ) %>%
+  arrange(.original_row_order)
+
+instrument_link_mismatches <- expanded_joined %>%
+  filter(
+    !is.na(census_match_found),
+    census_instrument_id != census_instrument_id_from_census
+  ) %>%
+  select(
+    country,
+    pair_id,
+    census_evidence_id,
+    expanded_census_instrument_id = census_instrument_id,
+    census_instrument_id = census_instrument_id_from_census
+  )
+
+if (nrow(instrument_link_mismatches) > 0L) {
+  print(instrument_link_mismatches)
+  stop(
+    "Matched Census evidence IDs disagree with expanded census instrument IDs. ",
+    "No output was written."
+  )
+}
+
+unmatched_census_joins <- expanded_joined %>%
+  filter(is.na(census_match_found)) %>%
+  count(country, name = "n_unmatched_expanded_rows") %>%
+  left_join(
+    expanded_joined %>%
+      filter(is.na(census_match_found)) %>%
+      distinct(country, census_evidence_id) %>%
+      count(country, name = "n_distinct_unmatched_census_evidence_ids"),
+    by = "country"
+  ) %>%
+  arrange(desc(n_unmatched_expanded_rows), country)
+
+join_audit <- tibble(
+  check = c(
+    "expanded rows before join",
+    "expanded rows after join",
+    "matched Census rows",
+    "unmatched Census joins",
+    "ambiguous Census joins",
+    "matched instrument-ID disagreements"
+  ),
+  value = c(
+    nrow(SSA_EARMARK_ALLOCATIONS_EXPANDED_before),
+    nrow(expanded_joined),
+    sum(!is.na(expanded_joined$census_match_found)),
+    sum(is.na(expanded_joined$census_match_found)),
+    nrow(duplicate_census_lookup_keys),
+    nrow(instrument_link_mismatches)
+  )
+)
+
+SSA_EARMARK_ALLOCATIONS_EXPANDED <- expanded_joined %>%
+  select(
+    all_of(names(SSA_EARMARK_ALLOCATIONS_EXPANDED_before)),
+    all_of(requested_classification_columns)
+  )
+
+expanded_prewrite_checks <- make_preservation_checks(
+  "SSA_EARMARK_ALLOCATIONS_EXPANDED",
+  SSA_EARMARK_ALLOCATIONS_EXPANDED_before,
+  SSA_EARMARK_ALLOCATIONS_EXPANDED
+)
+
+if (!all(expanded_prewrite_checks$passed)) {
+  print(expanded_prewrite_checks %>% filter(!passed))
+  stop("Expanded-table preservation checks failed; no output was written.")
+}
+```
+
+```{r display-expanded-join-audit}
+display_table(census_lookup_key_audit)
+display_table(duplicate_census_lookup_keys)
+display_table(join_audit)
+display_table(unmatched_census_joins)
+display_table(instrument_link_mismatches)
+```
+
+# 5. Verify the atomic allocation-link unit
+
+One atomic allocation link is one distinct
+`country + pair_id + census_instrument_id` combination. Counts are constructed
+only after confirming this key is complete and unique.
+
+```{r audit-atomic-link-key}
+atomic_key_missing_rows <- SSA_EARMARK_ALLOCATIONS_EXPANDED %>%
+  filter(
+    is_missing_text(country) |
+      is_missing_text(pair_id) |
+      is_missing_text(census_instrument_id)
+  ) %>%
+  select(
+    country,
+    pair_id,
+    census_instrument_id,
+    census_evidence_id
+  )
+
+duplicate_atomic_link_keys <- SSA_EARMARK_ALLOCATIONS_EXPANDED %>%
+  count(
+    country,
+    pair_id,
+    census_instrument_id,
+    name = "n_rows"
+  ) %>%
+  filter(n_rows > 1L) %>%
+  arrange(desc(n_rows), country, pair_id, census_instrument_id)
+
+atomic_key_audit <- tibble(
+  check = c(
+    "expanded rows",
+    "distinct complete atomic-link keys",
+    "rows with an incomplete atomic-link key",
+    "duplicate atomic-link keys",
+    "duplicate-row excess over the atomic key"
+  ),
+  value = c(
+    nrow(SSA_EARMARK_ALLOCATIONS_EXPANDED),
+    nrow(
+      SSA_EARMARK_ALLOCATIONS_EXPANDED %>%
+        filter(
+          !is_missing_text(country),
+          !is_missing_text(pair_id),
+          !is_missing_text(census_instrument_id)
+        ) %>%
+        distinct(country, pair_id, census_instrument_id)
+    ),
+    nrow(atomic_key_missing_rows),
+    nrow(duplicate_atomic_link_keys),
+    sum(pmax(duplicate_atomic_link_keys$n_rows - 1L, 0L))
+  )
+)
+
+if (nrow(atomic_key_missing_rows) > 0L ||
+    nrow(duplicate_atomic_link_keys) > 0L) {
+  print(atomic_key_audit)
+  print(atomic_key_missing_rows)
+  print(duplicate_atomic_link_keys)
+  stop(
+    "The atomic allocation-link key is incomplete or duplicated. ",
+    "No summary or output was created."
+  )
+}
+
+atomic_links_all <- SSA_EARMARK_ALLOCATIONS_EXPANDED %>%
+  distinct(country, pair_id, census_instrument_id, .keep_all = TRUE) %>%
+  mutate(
+    revenue_class_display = if_else(
+      is_missing_text(revenue_class),
+      "Missing",
+      revenue_class
+    )
+  )
+
+atomic_links_earmarked <- atomic_links_all %>%
+  filter(earmark_status %in% partial_exclusive_statuses)
+
+earmark_status_filter_audit <- tibble(
+  sample = c(
+    "All statutory allocations",
+    "Partial and exclusive earmarks"
+  ),
+  n_atomic_links = c(
+    nrow(atomic_links_all),
+    nrow(atomic_links_earmarked)
+  ),
+  statuses_present = c(
+    paste(
+      sort(unique(atomic_links_all$earmark_status)),
+      collapse = "; "
+    ),
+    paste(
+      sort(unique(atomic_links_earmarked$earmark_status)),
+      collapse = "; "
+    )
+  )
+)
+```
+
+```{r display-atomic-link-audit}
+display_table(atomic_key_audit)
+display_table(atomic_key_missing_rows)
+display_table(duplicate_atomic_link_keys)
+display_table(earmark_status_filter_audit)
+```
+
+# 6. Revenue-class summary
+
+Missing Census matches and unmatched `instrument_nature` values remain visible
+as `Missing`. No link is removed from either denominator.
+
+```{r compute-revenue-class-summary}
+total_links_all <- nrow(atomic_links_all)
+total_links_earmarked <- nrow(atomic_links_earmarked)
+
+if (total_links_all == 0L || total_links_earmarked == 0L) {
+  stop("Both the full and filtered samples must contain at least one link.")
+}
+
+revenue_class_counts_all <- atomic_links_all %>%
+  count(revenue_class = revenue_class_display, name = "n_links_all")
+
+revenue_class_counts_earmarked <- atomic_links_earmarked %>%
+  count(
+    revenue_class = revenue_class_display,
+    name = "n_links_earmarked"
+  )
+
+revenue_class_summary <- full_join(
+  revenue_class_counts_all,
+  revenue_class_counts_earmarked,
+  by = "revenue_class"
+) %>%
+  mutate(
+    n_links_all = replace_na(n_links_all, 0L),
+    n_links_earmarked = replace_na(n_links_earmarked, 0L),
+    share_links_all = n_links_all / total_links_all,
+    share_links_earmarked = n_links_earmarked / total_links_earmarked
+  ) %>%
+  select(
+    revenue_class,
+    n_links_all,
+    share_links_all,
+    n_links_earmarked,
+    share_links_earmarked
+  ) %>%
+  arrange(desc(n_links_all), revenue_class)
+
+share_and_total_checks <- tibble(
+  sample = c(
+    "All statutory allocations",
+    "Partial and exclusive earmarks"
+  ),
+  total_atomic_links = c(total_links_all, total_links_earmarked),
+  sum_class_link_counts = c(
+    sum(revenue_class_summary$n_links_all),
+    sum(revenue_class_summary$n_links_earmarked)
+  ),
+  sum_class_shares = c(
+    sum(revenue_class_summary$share_links_all),
+    sum(revenue_class_summary$share_links_earmarked)
+  ),
+  passed = c(
+    sum(revenue_class_summary$n_links_all) == total_links_all &&
+      isTRUE(all.equal(
+        sum(revenue_class_summary$share_links_all),
+        1,
+        tolerance = 1e-12
+      )),
+    sum(revenue_class_summary$n_links_earmarked) == total_links_earmarked &&
+      isTRUE(all.equal(
+        sum(revenue_class_summary$share_links_earmarked),
+        1,
+        tolerance = 1e-12
+      ))
+  )
+)
+
+if (!all(share_and_total_checks$passed)) {
+  print(share_and_total_checks)
+  stop("Revenue-class counts or shares do not reconcile to their sample total.")
+}
+```
+
+```{r display-revenue-class-summary}
+display_table(revenue_class_summary)
+display_table(share_and_total_checks)
+```
+
+# 7. Exact plot data
+
+The two CSV tables below contain exactly the rows and values displayed in their
+matching figures. The readable labels are derived only for presentation; the
+stored `revenue_class` codes remain unchanged.
+
+```{r prepare-plot-data}
+make_revenue_class_label <- function(values) {
+  values %>%
+    str_replace_all("_", " ") %>%
+    str_to_sentence() %>%
+    str_wrap(width = 34)
+}
+
+revenue_class_all_plot_data <- revenue_class_summary %>%
+  transmute(
+    revenue_class,
+    revenue_class_label = make_revenue_class_label(revenue_class),
+    n_links_all,
+    share_links_all
+  ) %>%
+  arrange(desc(share_links_all), revenue_class)
+
+revenue_class_earmarked_plot_data <- revenue_class_summary %>%
+  transmute(
+    revenue_class,
+    revenue_class_label = make_revenue_class_label(revenue_class),
+    n_links_earmarked,
+    share_links_earmarked
+  ) %>%
+  arrange(desc(share_links_earmarked), revenue_class)
+```
+
+```{r display-plot-data}
+display_table(revenue_class_all_plot_data)
+display_table(revenue_class_earmarked_plot_data)
+```
+
+# 8. All statutory allocations
+
+```{r build-allocation-figure}
+all_plot_frame <- revenue_class_all_plot_data %>%
+  mutate(
+    revenue_class_label = factor(
+      revenue_class_label,
+      levels = rev(revenue_class_label)
+    )
+  )
+
+revenue_class_all_plot <- ggplot(
+  all_plot_frame,
+  aes(x = share_links_all, y = revenue_class_label)
+) +
+  geom_col(width = 0.68, fill = main_blue) +
+  geom_text(
+    aes(label = label_percent(accuracy = 0.1)(share_links_all)),
+    hjust = -0.12,
+    colour = "#333333",
+    size = 4.2
+  ) +
+  scale_x_continuous(
+    labels = label_percent(accuracy = 1),
+    limits = c(0, NA),
+    expand = expansion(mult = c(0, 0.18))
+  ) +
+  labs(
+    title = "Which revenue sources underpin statutory allocations?",
+    subtitle = paste0(
+      "Share of ", comma(total_links_all),
+      " source-to-destination links in the observed legal corpora"
+    ),
+    x = "Share of statutory allocation links",
+    y = NULL,
+    caption = str_wrap(
+      paste0(
+        "Note: One link is one country × allocation channel × linked Census ",
+        "instrument. Missing includes unmatched classifications and links ",
+        "without a match in the analytical Census."
+      ),
+      width = 105
+    )
+  ) +
+  theme_revenue_class
+```
+
+```{r display-allocation-figure, echo=FALSE}
+revenue_class_all_plot
+```
+
+# 9. Partial and exclusive earmarks
+
+```{r build-earmarked-figure}
+earmarked_plot_frame <- revenue_class_earmarked_plot_data %>%
+  mutate(
+    revenue_class_label = factor(
+      revenue_class_label,
+      levels = rev(revenue_class_label)
+    )
+  )
+
+revenue_class_earmarked_plot <- ggplot(
+  earmarked_plot_frame,
+  aes(x = share_links_earmarked, y = revenue_class_label)
+) +
+  geom_col(width = 0.68, fill = main_blue) +
+  geom_text(
+    aes(label = label_percent(accuracy = 0.1)(share_links_earmarked)),
+    hjust = -0.12,
+    colour = "#333333",
+    size = 4.2
+  ) +
+  scale_x_continuous(
+    labels = label_percent(accuracy = 1),
+    limits = c(0, NA),
+    expand = expansion(mult = c(0, 0.18))
+  ) +
+  labs(
+    title = "Which revenue sources underpin functional earmarks?",
+    subtitle = paste0(
+      "Share of ", comma(total_links_earmarked),
+      " links from partial and exclusive earmark instruments"
+    ),
+    x = "Share of earmark links",
+    y = NULL,
+    caption = str_wrap(
+      paste0(
+        "Note: One link is one country × allocation channel × linked Census ",
+        "instrument. The classification does not measure the share of ",
+        "revenue amounts that is earmarked."
+      ),
+      width = 105
+    )
+  ) +
+  theme_revenue_class
+```
+
+```{r display-earmarked-figure, echo=FALSE}
+revenue_class_earmarked_plot
+```
+
+# 10. Stage, verify, and commit all outputs
+
+All candidate files are written to temporary paths and checked before any final
+path is overwritten. Existing final files are backed up and restored if a
+commit or final read-back check fails.
+
+```{r stage-and-verify-outputs}
+stage_dir <- tempfile(pattern = "08_revenue_class_stage_")
+dir.create(stage_dir, recursive = TRUE, showWarnings = FALSE)
+
+stage_paths <- file.path(stage_dir, basename(output_paths))
+names(stage_paths) <- names(output_paths)
+
+write_csv(SSA_CENSUS, stage_paths[["census"]], na = "")
+write_csv(
+  SSA_EARMARK_ALLOCATIONS_EXPANDED,
+  stage_paths[["expanded"]],
+  na = ""
+)
+write_csv(
+  revenue_class_summary,
+  stage_paths[["summary"]],
+  na = ""
+)
+write_csv(
+  revenue_class_all_plot_data,
+  stage_paths[["all_plot_data"]],
+  na = ""
+)
+write_csv(
+  revenue_class_earmarked_plot_data,
+  stage_paths[["earmarked_plot_data"]],
+  na = ""
+)
+
+ggsave(
+  filename = stage_paths[["all_figure"]],
+  plot = revenue_class_all_plot,
+  width = 10.5,
+  height = 7.2,
+  units = "in",
+  dpi = 300,
+  bg = "white"
+)
+ggsave(
+  filename = stage_paths[["earmarked_figure"]],
+  plot = revenue_class_earmarked_plot,
+  width = 10.5,
+  height = 7.2,
+  units = "in",
+  dpi = 300,
+  bg = "white"
+)
+
+staged_census <- read_all_character(stage_paths[["census"]])
+staged_expanded <- read_all_character(stage_paths[["expanded"]])
+
+staged_preservation_checks <- bind_rows(
+  make_preservation_checks(
+    "SSA_CENSUS",
+    SSA_CENSUS_before,
+    staged_census
+  ),
+  make_preservation_checks(
+    "SSA_EARMARK_ALLOCATIONS_EXPANDED",
+    SSA_EARMARK_ALLOCATIONS_EXPANDED_before,
+    staged_expanded
+  )
+)
+
+read_analysis_csv <- function(path) {
+  read_csv(path, show_col_types = FALSE, progress = FALSE)
+}
+
+same_table_values <- function(saved, expected) {
+  identical(names(saved), names(expected)) &&
+    nrow(saved) == nrow(expected) &&
+    isTRUE(all.equal(
+      as.data.frame(saved),
+      as.data.frame(expected),
+      check.attributes = FALSE,
+      tolerance = 1e-12
+    ))
+}
+
+staged_analysis_checks <- tibble(
+  output = c(
+    "08_revenue_class_summary.csv",
+    "08_revenue_class_all.csv",
+    "08_revenue_class_partial_exclusive.csv",
+    "08_revenue_class_all.png",
+    "08_revenue_class_partial_exclusive.png"
+  ),
+  passed = c(
+    same_table_values(
+      read_analysis_csv(stage_paths[["summary"]]),
+      revenue_class_summary
+    ),
+    same_table_values(
+      read_analysis_csv(stage_paths[["all_plot_data"]]),
+      revenue_class_all_plot_data
+    ),
+    same_table_values(
+      read_analysis_csv(stage_paths[["earmarked_plot_data"]]),
+      revenue_class_earmarked_plot_data
+    ),
+    file.info(stage_paths[["all_figure"]])$size > 10000,
+    file.info(stage_paths[["earmarked_figure"]])$size > 10000
+  )
+)
+
+if (!all(staged_preservation_checks$passed) ||
+    !all(staged_analysis_checks$passed)) {
+  print(staged_preservation_checks %>% filter(!passed))
+  print(staged_analysis_checks %>% filter(!passed))
+  stop("Staged output checks failed; no final path was overwritten.")
+}
+```
+
+```{r commit-output-bundle}
+commit_output_bundle <- function(stage_paths, output_paths) {
+  existed_before <- file.exists(output_paths)
+  backup_dir <- tempfile(pattern = "08_revenue_class_backup_")
+  dir.create(backup_dir, recursive = TRUE, showWarnings = FALSE)
+  backup_paths <- file.path(backup_dir, basename(output_paths))
+  names(backup_paths) <- names(output_paths)
+  committed <- FALSE
+
+  on.exit({
+    if (!committed) {
+      for (name in names(output_paths)) {
+        if (existed_before[[name]] && file.exists(backup_paths[[name]])) {
+          file.copy(
+            backup_paths[[name]],
+            output_paths[[name]],
+            overwrite = TRUE
+          )
+        } else if (!existed_before[[name]] &&
+                   file.exists(output_paths[[name]])) {
+          file.remove(output_paths[[name]])
+        }
+      }
+    }
+    unlink(stage_dir, recursive = TRUE, force = TRUE)
+    unlink(backup_dir, recursive = TRUE, force = TRUE)
+  }, add = TRUE)
+
+  for (name in names(output_paths)[existed_before]) {
+    if (!file.copy(
+      output_paths[[name]],
+      backup_paths[[name]],
+      overwrite = FALSE
+    )) {
+      stop("Could not create a rollback copy for ", name, ".")
+    }
+  }
+
+  commit_ok <- vapply(
+    names(output_paths),
+    function(name) file.copy(
+      stage_paths[[name]],
+      output_paths[[name]],
+      overwrite = TRUE
+    ),
+    logical(1)
+  )
+  if (!all(commit_ok)) {
+    stop("Could not commit every requested output file.")
+  }
+
+  final_census <- read_all_character(output_paths[["census"]])
+  final_expanded <- read_all_character(output_paths[["expanded"]])
+
+  final_preservation_checks <- bind_rows(
+    make_preservation_checks(
+      "SSA_CENSUS",
+      SSA_CENSUS_before,
+      final_census
+    ),
+    make_preservation_checks(
+      "SSA_EARMARK_ALLOCATIONS_EXPANDED",
+      SSA_EARMARK_ALLOCATIONS_EXPANDED_before,
+      final_expanded
+    )
+  )
+
+  final_analysis_checks <- tibble(
+    output = c(
+      "08_revenue_class_summary.csv",
+      "08_revenue_class_all.csv",
+      "08_revenue_class_partial_exclusive.csv",
+      "08_revenue_class_all.png",
+      "08_revenue_class_partial_exclusive.png"
+    ),
+    passed = c(
+      same_table_values(
+        read_analysis_csv(output_paths[["summary"]]),
+        revenue_class_summary
+      ),
+      same_table_values(
+        read_analysis_csv(output_paths[["all_plot_data"]]),
+        revenue_class_all_plot_data
+      ),
+      same_table_values(
+        read_analysis_csv(output_paths[["earmarked_plot_data"]]),
+        revenue_class_earmarked_plot_data
+      ),
+      file.info(output_paths[["all_figure"]])$size > 10000,
+      file.info(output_paths[["earmarked_figure"]])$size > 10000
+    )
+  )
+
+  if (!all(final_preservation_checks$passed) ||
+      !all(final_analysis_checks$passed)) {
+    print(final_preservation_checks %>% filter(!passed))
+    print(final_analysis_checks %>% filter(!passed))
+    stop("Final read-back checks failed; restoring prior files.")
+  }
+
+  committed <- TRUE
+  list(
+    census = final_census,
+    expanded = final_expanded,
+    preservation_checks = final_preservation_checks,
+    analysis_checks = final_analysis_checks
+  )
+}
+
+committed_outputs <- commit_output_bundle(stage_paths, output_paths)
+```
+
+```{r display-final-output-checks}
+display_table(committed_outputs$preservation_checks)
+display_table(committed_outputs$analysis_checks)
+```
+
+# 11. Run summary
+
+```{r run-summary, results='asis'}
+cat(
+  "- Census rows preserved: ", nrow(committed_outputs$census), ".\n",
+  "- Expanded allocation-link rows preserved: ",
+  nrow(committed_outputs$expanded), ".\n",
+  "- Atomic links: ", comma(total_links_all),
+  " in the full sample and ", comma(total_links_earmarked),
+  " among partial and exclusive earmarks.\n",
+  "- Unmatched Census instrument natures: ",
+  nrow(unmatched_instrument_nature), " values across ",
+  sum(unmatched_instrument_nature$n_census_rows), " Census rows.\n",
+  "- Unmatched expanded-to-Census joins: ",
+  sum(is.na(expanded_joined$census_match_found)), " rows.\n",
+  "- Duplicate atomic-link keys: ", nrow(duplicate_atomic_link_keys), ".\n",
+  "- Revenue-class shares sum to ",
+  percent(sum(revenue_class_summary$share_links_all), accuracy = 0.1),
+  " in the full sample and ",
+  percent(
+    sum(revenue_class_summary$share_links_earmarked),
+    accuracy = 0.1
+  ),
+  " in the filtered sample.\n",
+  sep = ""
+)
+```
