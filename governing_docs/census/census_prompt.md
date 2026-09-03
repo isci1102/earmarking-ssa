@@ -1,29 +1,3 @@
-TARGET DOCUMENTS
-Run CENSUS independently on each of these files:
-- [target file 1]
-
-SUPPORT DOCUMENTS
-- [support file 1]: interpretation/completeness support for [target]
-- [support file 2]: interpretation support for [target]
-
-SUPPORT-DOCUMENT RULE
-
-Produce census rows only from the TARGET document currently being processed.
-
-A support document may be used only to:
-- interpret a cross-reference or terminology;
-- identify that a rate or provision exists elsewhere;
-- perform the completeness check;
-- flag a current-status issue.
-
-Do not:
-- create census rows from a support document;
-- fill a missing target-document field using a support document;
-- merge the support document into the target output.
-
-If a support document itself enacts a revenue instrument, it must be processed
-separately as a TARGET and receive its own CENSUS output.
-
 # CENSUS EXTRACTION PROMPT
 
 Read one legal document in full and return **one row per revenue instrument in it**. That single list is the deliverable.

@@ -1,6 +1,10 @@
 .DS_Store
 Thumbs.db
 
+AGENTS.md
+
+alexandra_analysis/
+
 # ── Secrets & local config (the reason we're here) ──
 config/paths.yml          # real filled-in config; commit paths.example.yml instead
 .env

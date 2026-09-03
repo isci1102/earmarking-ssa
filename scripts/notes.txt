@@ -1,1 +1,0 @@
-python3 scripts/json_to_xlsx.py countries/CIV/outputs/extract/*.json
