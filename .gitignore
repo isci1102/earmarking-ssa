@@ -14,16 +14,20 @@ secrets/
 **/credentials*
 writings/
 
+
 # ── Data & outputs (live in Dropbox, never in git) ──
 data/
 outputs/
-countries/*/source_pdfs/
-countries/*/outputs/
+countries/
 *.xlsx
 *.csv
 !docs/**/*.csv            # exception: allow small reference CSVs under docs/ if any
 !docs/**/*.xlsx
-
+analysis_data/created-data/
+analysis_data/supporting-data/*
+!analysis_data/supporting-data/country_groups.csv
+analysis/output/
+docs/_backup*/
 # ── Python ──
 __pycache__/
 *.py[cod]

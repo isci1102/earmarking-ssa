@@ -1,0 +1,585 @@
+---
+title: "Corruption and delays in weak institutional environments - Baseline models"
+author: "Alexandra Amani"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    theme: flatly
+    highlight: tango
+    toc: true
+    toc_float: true
+    number_sections: true
+    code_folding: hide
+    df_print: paged
+    smooth_scroll: true
+
+---
+
+<!--
+Baseline models B1-B6 of the lean model plan (version 2, 6 October 2026):
+research_plan/Model plan — bribe requests, connection delays and costs.md, section "Main text".
+B1-B3: log days on the bribe request, adding survey FE / clustering, then controls and sector dummies.
+B4: B3 on the cost sample (N_J), so that B3 vs B5 is not a change of sample.
+B5: log cost (winsorized deviation from the survey median) with the B3 specification.
+B6: selection check, LPMs of pending / denied on the bribe request (all applicants).
+Inference: SE clustered by country; wild cluster bootstrap (Webb) for the headline models B3 and B5.
+MDEs of B3 and B5 under the table. The coefficients are conditional associations, not causal effects.
+-->
+
+
+## Libraries
+```{r,echo=FALSE}
+
+library(dplyr)
+library(tidyverse)
+library(fixest)
+```
+
+## Loading data
+
+```{r}
+
+## na.strings: empty sector cells must be read as NA, not as an empty category ""
+baseline <- read.csv('C:/Users/alexa/Documents/bribery-electricity/data/created-data/wbes_baseline.csv',
+                     na.strings = c("", "NA"))
+
+## Survey identifier: one wave per country in this stack, so survey = country-wave = country
+baseline <- baseline %>%
+  mutate(survey = paste0(country_iso3, "_", wave))
+
+## Tables are written to outputs/baseline-<date>/
+out_dir <- paste0("C:/Users/alexa/Documents/bribery-electricity/outputs/baseline-", Sys.Date())
+dir.create(out_dir, showWarnings = FALSE)
+```
+
+## Samples
+
+```{r}
+## --- Samples (model plan, "Samples and baseline specification") ---
+## S_A: all applicants in the cleaned file: completed, pending or denied, bribe question (C5) answered yes/no.
+##      This is the population for the selection check B6: whether a request is related to the status of the
+##      application can only be seen among all applicants, not among completed ones.
+## N_D: completed connections (c4 > 0). Days are only observed when the connection was obtained, so every
+##      delay model is estimated here.
+## N_J: completed connections with a positive cost. Zero costs are already NaN in the cleaning notebook and
+##      ERI / MDG / SDN / ZAF have no cost question (c31), so N_J is smaller than N_D for structural reasons.
+sample_A <- baseline
+sample_D <- sample_A %>% filter(c4 > 0)
+sample_J <- sample_D %>% filter(cost_connexion > 0)
+
+cat("S_A:", nrow(sample_A), " | N_D:", nrow(sample_D), " | N_J:", nrow(sample_J), "\n")
+cat("Countries  S_A:", n_distinct(sample_A$country_iso3), " | N_D:", n_distinct(sample_D$country_iso3),
+    " | N_J:", n_distinct(sample_J$country_iso3), "\n")
+
+## Stop if the samples are not the ones of the model plan (e.g. after a re-export of the data)
+if (nrow(sample_A) != 2030) stop("S_A should have 2,030 rows, not ", nrow(sample_A))
+if (nrow(sample_D) != 1852) stop("N_D should have 1,852 rows, not ", nrow(sample_D))
+if (nrow(sample_J) != 1545) stop("N_J should have 1,545 rows, not ", nrow(sample_J))
+```
+
+```{r}
+## --- Application status for B6 ---
+## Coding of c4 taken from code/feature_engineering/clean_baseline_data.ipynb (markdown note on C4 and the
+## sample filter df_applied[df_applied.c4 >= -6]):
+##   c4 > 0  = number of days to obtain the connection (completed)
+##   c4 = -6 = application still in process (pending)
+##   c4 = -5 = application denied
+##   c4 = -9 (do not know) is dropped by the notebook, so S_A contains only these three statuses.
+sample_A <- sample_A %>%
+  mutate(pending = as.integer(c4 == -6),
+         denied  = as.integer(c4 == -5))
+
+if (any(!(sample_A$c4 > 0 | sample_A$c4 %in% c(-6, -5)))) stop("Unexpected c4 code in S_A")
+
+table(status = ifelse(sample_A$c4 > 0, "completed", ifelse(sample_A$c4 == -6, "pending", "denied")),
+      bribe_request = sample_A$bribe_request)
+```
+
+```{r}
+## --- Cost without extreme values (frozen decision 2), copied from the heterogeneity Rmd ---
+## Costs are in local currency, so extremes are defined relative to the survey median, in logs:
+## deviation = log cost - survey median of log cost. The survey median is absorbed by the survey FE anyway,
+## so only the deviation matters for the model, and capping it treats a cost 100 times the median the same way
+## in every currency.
+## The 1st and 99th percentiles of the deviations are computed ONCE, on all N_J firms pooled; deviations outside
+## are capped (firms are kept). The two cutoffs are stored as objects: every later subsample (robustness,
+## heterogeneity) must reuse them rather than recompute them, otherwise the outcome itself would change with
+## the subsample.
+sample_J <- sample_J %>%
+  group_by(survey) %>%
+  mutate(cost_dev = log_cost_connexion - median(log_cost_connexion)) %>%
+  ungroup()
+
+dev_p01 <- unname(quantile(sample_J$cost_dev, 0.01))
+dev_p99 <- unname(quantile(sample_J$cost_dev, 0.99))
+
+sample_J <- sample_J %>%
+  mutate(log_cost_w = log_cost_connexion - cost_dev + pmin(pmax(cost_dev, dev_p01), dev_p99))
+
+cat("Cutoffs of the deviation from the survey median (log points): p1 =", round(dev_p01, 3),
+    " | p99 =", round(dev_p99, 3), "\n")
+cat("Firms winsorized:", sum(abs(sample_J$log_cost_w - sample_J$log_cost_connexion) > 1e-9), "\n")
+```
+
+```{r}
+## Baseline controls X (5 October 2026): X^core frozen on 4 October + capital city.
+## Sector enters separately, as dummies: i(sector, ref = "Trade_Hospitality") in each formula below.
+## log_age = log(1 + age), as built in code/feature_engineering/clean_baseline_data.ipynb.
+ctrl_core <- c("log_employment", "log_age", "new_establishment", "foreign_owned", "government_owned",
+               "in_multi_establishment", "shareholding", "exporter", "top_manager_female", "capital_city")
+```
+
+## Missing values
+
+Rows with a missing value in any model variable are dropped by `feols`. They are counted here and in every
+model below, so that no row disappears silently.
+
+```{r}
+## --- Missing values in the model variables, by sample ---
+missing_table <- data.frame(
+  variable = c("log_days", "log_cost_w", "bribe_request", ctrl_core, "sector"),
+  S_A = NA, N_D = NA, N_J = NA
+)
+for (i in 1:nrow(missing_table)) {
+  v <- missing_table$variable[i]
+  missing_table$S_A[i] <- if (v %in% names(sample_A)) sum(is.na(sample_A[[v]])) else NA
+  missing_table$N_D[i] <- if (v %in% names(sample_D)) sum(is.na(sample_D[[v]])) else NA
+  missing_table$N_J[i] <- sum(is.na(sample_J[[v]]))
+}
+missing_table %>% filter(S_A > 0 | N_D > 0 | N_J > 0)
+```
+
+```{r}
+## --- Rows of the sample not used by a model ---
+## fixest drops a row when any variable of the formula is missing. The count of dropped rows is compared with
+## the number of incomplete rows on these variables: a drop for any other reason (e.g. a removed fixed effect)
+## stops the script instead of passing unnoticed. The IDs of the dropped firms are printed.
+dropped_rows <- function(model, data, vars, label) {
+  data <- as.data.frame(data)
+  n_dropped <- nrow(data) - nobs(model)
+  incomplete <- !complete.cases(data[, vars])
+  if (n_dropped != sum(incomplete)) stop(label, ": rows dropped for a reason other than missing values")
+  cat(label, ": sample", nrow(data), "| used", nobs(model), "| dropped for missing values", n_dropped,
+      if (n_dropped > 0) paste0("(idstd: ", paste(data$idstd[incomplete], collapse = ", "), ")"), "\n")
+  n_dropped
+}
+
+## Number of countries (clusters) in the estimation sample of a model
+n_clusters <- function(model, data) {
+  length(unique(as.data.frame(data)$country_iso3[obs(model)]))
+}
+```
+
+
+## Baseline models B1-B5
+
+```{r}
+## --- B1: raw association, log days on the bribe request, N_D ---
+## No fixed effects and no controls: the pooled difference in log days between requesters and non-requesters.
+## It is the reference point the other columns move away from. HC1 (heteroskedasticity-robust) SE, as in the
+## plan: B1 shows the naive precision; B2 shows how much survey FE and clustering change both the estimate
+## and its precision.
+b1 <- feols(
+  log_days ~ bribe_request,
+  vcov = "hetero",
+  data = sample_D
+)
+b1
+```
+
+```{r}
+## --- B2: + survey fixed effects, SE clustered by country, N_D ---
+## Survey FE: delays, utilities, procedures, questionnaire versions and survey years differ across surveys,
+## and so does the share of firms reporting a request. With survey FE the coefficient compares requesters with
+## non-requesters of the same survey only; surveys without requesters contribute nothing to it.
+## Clustering by country: residuals are correlated within a country (same utility and regulator, same survey
+## design and fieldwork), and so are the requests. With one wave per country, survey = country, so the survey
+## FE are nested in the clusters. 48 clusters.
+b2 <- feols(
+  log_days ~ bribe_request
+  | survey,
+  cluster = ~country_iso3,
+  data = sample_D
+)
+b2
+```
+
+```{r}
+## --- B3 (headline delay model): + controls X + sector dummies, survey FE, clustered by country, N_D ---
+## Controls: firm characteristics that can affect both exposure to requests and the time to connect
+## (size, age, ownership, multi-establishment, legal form, exporter, manager gender, capital city).
+## Sector as dummies, not as a fixed effect (author decision, 5 October 2026): the bribe coefficient is
+## identical with sector FE, but the dummies keep the sector differences visible. Reference category
+## Trade_Hospitality, the largest group; the reference does not change the bribe coefficient.
+## The one firm without a resolved sector (Sudan) has sector = NA and is dropped by i(sector); it is
+## reported below with the other missing values, not assigned to a category.
+## B3 also drops the firms with missing controls, so B2 -> B3 changes the specification and the sample by a
+## few rows (counts below).
+b3 <- feols(
+  log_days ~ bribe_request + log_employment + log_age + new_establishment + foreign_owned +
+    government_owned + in_multi_establishment + shareholding + exporter + top_manager_female + capital_city +
+    i(sector, ref = "Trade_Hospitality")
+  | survey,
+  cluster = ~country_iso3,
+  data = sample_D
+)
+b3
+```
+
+```{r}
+## --- B4: B3 on N_J (log days, completed connections with a positive cost) ---
+## Same specification as B3, on the cost sample. B3 vs B4 shows how much the delay coefficient moves when the
+## sample is restricted to firms with a cost; B4 vs B5 then compares delay and cost on the same firms.
+b4 <- feols(
+  log_days ~ bribe_request + log_employment + log_age + new_establishment + foreign_owned +
+    government_owned + in_multi_establishment + shareholding + exporter + top_manager_female + capital_city +
+    i(sector, ref = "Trade_Hospitality")
+  | survey,
+  cluster = ~country_iso3,
+  data = sample_J
+)
+b4
+```
+
+```{r}
+## --- B5 (headline cost model): log cost (winsorized), B3 specification, N_J ---
+## Cost helps interpret the delay result: a request could buy speed (higher cost, shorter delay) or be extracted
+## with no change in speed. The cost outcome is the winsorized log-cost deviation built above.
+## The questionnaire does not say whether the reported cost (C31) includes informal payments.
+b5 <- feols(
+  log_cost_w ~ bribe_request + log_employment + log_age + new_establishment + foreign_owned +
+    government_owned + in_multi_establishment + shareholding + exporter + top_manager_female + capital_city +
+    i(sector, ref = "Trade_Hospitality")
+  | survey,
+  cluster = ~country_iso3,
+  data = sample_J
+)
+b5
+```
+
+```{r}
+## --- Rows dropped for missing values, every model ---
+vars_b3 <- c("log_days", "bribe_request", ctrl_core, "sector", "survey", "country_iso3")
+vars_b5 <- c("log_cost_w", "bribe_request", ctrl_core, "sector", "survey", "country_iso3")
+
+dropped <- c(
+  B1 = dropped_rows(b1, sample_D, c("log_days", "bribe_request"), "B1"),
+  B2 = dropped_rows(b2, sample_D, c("log_days", "bribe_request", "survey", "country_iso3"), "B2"),
+  B3 = dropped_rows(b3, sample_D, vars_b3, "B3"),
+  B4 = dropped_rows(b4, sample_J, vars_b3, "B4"),
+  B5 = dropped_rows(b5, sample_J, vars_b5, "B5")
+)
+```
+
+
+## Wild cluster bootstrap (B3, B5)
+
+With 44-48 countries of very unequal size (a few surveys carry much of the identifying variation: about 19
+effective clusters in the stage-1 EDA), the clustered t-test can reject too often. The wild cluster bootstrap
+of the t-statistic has much better size in this setting (Cameron, Gelbach and Miller 2008; MacKinnon and Webb
+2017).
+
+- **Restricted (null imposed):** the bootstrap samples are generated under H0, which gives more reliable
+  p-values than the unrestricted version.
+- **Webb weights:** six values (±√1.5, ±1, ±√0.5) drawn per country. Rademacher (±1) gives only 2^G distinct
+  samples and is less reliable with unbalanced clusters (Webb 2023).
+- **9,999 draws, fixed seed:** (B + 1) × 0.05 is an integer, and the simulation error of a p-value near 0.05
+  is about 0.002. The same draws are used for every hypothesis tested, so the CI is stable.
+- **95% CI by test inversion:** the set of values beta0 that the bootstrap test does not reject at 5%, so the
+  CI and the p-value always agree.
+
+The bootstrap is written out step by step (the package fwildclusterboot is no longer on CRAN). It is the
+restricted bootstrap of the earlier baseline Rmd, with one change for speed: instead of re-estimating the model
+for each draw, the model is projected once on the controls and fixed effects (Frisch–Waugh–Lovell), so that
+each draw only needs country sums (the algorithm of Roodman et al. 2019). The check at the end of this section
+re-estimates the first draws with `feols`, as in the earlier Rmd, and must give the same t-statistics.
+
+```{r}
+## --- Function: wild cluster restricted bootstrap with Webb weights, for the bribe-request coefficient ---
+wild_bootstrap_webb <- function(model, data, outcome, B = 9999, seed = 20261006, level = 0.95) {
+
+  ## Estimation sample of the model (the rows fixest used)
+  d <- as.data.frame(data)[obs(model), ]
+  y <- d[[outcome]]
+  D <- d$bribe_request
+
+  ## Every other regressor of B3 / B5: controls, sector dummies and survey dummies (= survey FE)
+  Z <- model.matrix(as.formula(paste0(
+    "~ ", paste(ctrl_core, collapse = " + "),
+    " + relevel(factor(sector), ref = 'Trade_Hospitality') + factor(survey)")), data = d)
+  qrZ <- qr(Z)
+
+  ## Frisch-Waugh-Lovell: y and D net of Z. The bribe coefficient is sum(D_t * y_t) / sum(D_t^2)
+  y_t <- qr.resid(qrZ, y)
+  D_t <- qr.resid(qrZ, D)
+  SDD <- sum(D_t^2)
+  beta_hat <- sum(D_t * y_t) / SDD
+  if (abs(beta_hat - coef(model)["bribe_request"]) > 1e-8) stop("FWL coefficient differs from fixest")
+
+  ## Countries
+  cl <- d$country_iso3
+  clusters <- sort(unique(cl))
+  G <- length(clusters)
+  q <- tapply(D_t^2, cl, sum)[clusters]           # country sums of D_t^2
+
+  ## Clustered SE of the model. Computed here without small-sample correction (CR0), then scaled by fixest's
+  ## correction, so that every t below is exactly fixest's t. The factor is the same in the original and in
+  ## every bootstrap draw, so it does not change the p-value.
+  score <- tapply(D_t * (y_t - beta_hat * D_t), cl, sum)[clusters]
+  se_cr0 <- sqrt(sum(score^2)) / SDD
+  se_model <- unname(se(model)["bribe_request"])
+  ssc_factor <- (se_model / se_cr0)^2
+
+  ## Webb weights: one per country and draw, drawn once and reused for every beta0
+  set.seed(seed)
+  webb <- c(-sqrt(1.5), -1, -sqrt(.5), sqrt(.5), 1, sqrt(1.5))
+  V <- matrix(sample(webb, G * B, replace = TRUE), nrow = G, ncol = B)
+
+  ## Bootstrap t-statistics under H0: beta = beta0
+  bootstrap_t <- function(beta0) {
+    ## Restricted model: y - beta0 * D on Z. After FWL its residuals are u_r = y_t - beta0 * D_t
+    u_r <- y_t - beta0 * D_t
+    ## Bootstrap outcome y* = restricted fit + beta0 * D + u_r * v_country. Net of Z it is
+    ## beta0 * D_t + sum over countries h of v_h * M_Z(u_r * 1{country h}).
+    ## K[g, h] = sum over firms of country g of D_t * M_Z(u_r * 1{country h}): computed once per beta0.
+    K <- matrix(0, G, G)
+    for (h in 1:G) {
+      e_h <- qr.resid(qrZ, u_r * (cl == clusters[h]))
+      K[, h] <- tapply(D_t * e_h, cl, sum)[clusters]
+    }
+    t_star <- numeric(B)
+    for (b in 1:B) {
+      Kv <- as.numeric(K %*% V[, b])
+      delta <- sum(Kv) / SDD                      # beta* - beta0
+      score_star <- Kv - q * delta                # country scores with the unrestricted bootstrap residuals
+      t_star[b] <- delta / (sqrt(ssc_factor * sum(score_star^2)) / SDD)
+    }
+    t_star
+  }
+
+  ## Symmetric p-value: share of bootstrap |t*| at least as large as the observed |t|
+  p_value <- function(beta0) {
+    t_obs <- (beta_hat - beta0) / se_model
+    mean(abs(bootstrap_t(beta0)) >= abs(t_obs))
+  }
+
+  ## CI: beta0 where the p-value crosses 1 - level, on each side of beta_hat (p = 1 at beta_hat)
+  width <- 10 * se_model
+  if (p_value(beta_hat - width) >= 1 - level | p_value(beta_hat + width) >= 1 - level) stop("CI search interval too narrow")
+  ci_low  <- uniroot(function(b0) p_value(b0) - (1 - level), c(beta_hat - width, beta_hat), tol = 1e-6)$root
+  ci_high <- uniroot(function(b0) p_value(b0) - (1 - level), c(beta_hat, beta_hat + width), tol = 1e-6)$root
+
+  list(beta = beta_hat, se = se_model, t = beta_hat / se_model, p_value = p_value(0),
+       ci_low = ci_low, ci_high = ci_high, G = G, B = B,
+       t_star_0 = bootstrap_t(0), V = V, clusters = clusters)
+}
+```
+
+```{r}
+boot_b3 <- wild_bootstrap_webb(b3, sample_D, "log_days")
+boot_b5 <- wild_bootstrap_webb(b5, sample_J, "log_cost_w")
+
+data.frame(model = c("B3 log days, N_D", "B5 log cost (winsorized), N_J"),
+           beta  = c(boot_b3$beta, boot_b5$beta),
+           se    = c(boot_b3$se, boot_b5$se),
+           p_clustered = c(pvalue(b3)["bribe_request"], pvalue(b5)["bribe_request"]),
+           p_bootstrap = c(boot_b3$p_value, boot_b5$p_value),
+           ci_low  = c(boot_b3$ci_low, boot_b5$ci_low),
+           ci_high = c(boot_b3$ci_high, boot_b5$ci_high),
+           clusters = c(boot_b3$G, boot_b5$G)) %>%
+  mutate(across(where(is.numeric), ~ round(.x, 4)))
+```
+
+```{r}
+## --- Check: the first 20 bootstrap draws of B3, re-estimated directly with feols ---
+## As in the earlier baseline Rmd: restricted model without the bribe request (H0: beta = 0), then
+## y* = fitted + residual * Webb weight of the country, and the full model re-estimated on y*.
+d_check <- sample_D[obs(b3), ]
+m0 <- feols(
+  log_days ~ log_employment + log_age + new_establishment + foreign_owned +
+    government_owned + in_multi_establishment + shareholding + exporter + top_manager_female + capital_city +
+    i(sector, ref = "Trade_Hospitality")
+  | survey,
+  data = d_check
+)
+yhat0 <- predict(m0)
+u0    <- resid(m0)
+
+t_check <- numeric(20)
+for (b in 1:20) {
+  w_by_cluster <- boot_b3$V[, b]
+  names(w_by_cluster) <- boot_b3$clusters
+  d_check$y_star <- yhat0 + u0 * w_by_cluster[d_check$country_iso3]
+  m_b <- feols(
+    y_star ~ bribe_request + log_employment + log_age + new_establishment + foreign_owned +
+      government_owned + in_multi_establishment + shareholding + exporter + top_manager_female + capital_city +
+      i(sector, ref = "Trade_Hospitality")
+    | survey,
+    cluster = ~country_iso3,
+    data = d_check
+  )
+  t_check[b] <- tstat(m_b)["bribe_request"]
+}
+cat("Largest difference in t*, feols vs bootstrap function (first 20 draws):",
+    max(abs(t_check - boot_b3$t_star_0[1:20])), "\n")
+if (max(abs(t_check - boot_b3$t_star_0[1:20])) > 1e-6) stop("Bootstrap function does not reproduce feols")
+```
+
+
+## Baseline table
+
+```{r}
+## --- One table for B1-B5: beta, SE (HC1 in B1, clustered by country in B2-B5), bootstrap p-value and CI,
+## N, number of clusters, rows dropped for missing values ---
+baseline_table <- etable(
+  b1, b2, b3, b4, b5,
+  headers = c("B1", "B2", "B3", "B4", "B5"),
+  keep = "%bribe_request",
+  dict = c(bribe_request = "Bribe request", log_days = "log days", log_cost_w = "log cost (winsorized)",
+           survey = "Survey"),
+  fitstat = ~ n,
+  extralines = list(
+    "Sample" = c("N_D", "N_D", "N_D", "N_J", "N_J"),
+    "Controls and sector dummies" = c("No", "No", "Yes", "Yes", "Yes"),
+    "Standard errors" = c("HC1", "Clustered", "Clustered", "Clustered", "Clustered"),
+    "Clusters (countries)" = c("", n_clusters(b2, sample_D), n_clusters(b3, sample_D),
+                               n_clusters(b4, sample_J), n_clusters(b5, sample_J)),
+    "Wild cluster bootstrap p (Webb)" = c("", "", sprintf("%.3f", boot_b3$p_value), "",
+                                          sprintf("%.3f", boot_b5$p_value)),
+    "Bootstrap 95% CI" = c("", "", sprintf("[%.3f, %.3f]", boot_b3$ci_low, boot_b3$ci_high), "",
+                           sprintf("[%.3f, %.3f]", boot_b5$ci_low, boot_b5$ci_high)),
+    "Dropped for missing values" = dropped
+  )
+)
+baseline_table
+
+write.csv(baseline_table, paste0(out_dir, "/baseline_table_B1_B5.csv"), row.names = FALSE)
+```
+
+```{r}
+## --- Full coefficient table for B1-B5 (appendix version of the baseline table) ---
+## The table above shows only the bribe request. This export keeps every coefficient: the request, the controls
+## and the sector dummies (reference Trade_Hospitality, so each sector coefficient is the difference from it).
+## SE and p-values are those of each model as estimated: HC1 in B1, clustered by country in B2-B5 (fixest's
+## default small-sample correction and t with G - 1 df). B1 also has an intercept; the survey FE of B2-B5 are not
+## coefficients and are not listed. N and the number of clusters are repeated on every row of a model so that the
+## file can be filtered by model; clusters is NA for B1, which is not clustered.
+full_coefficients <- data.frame()
+for (name in c("B1", "B2", "B3", "B4", "B5")) {
+  m <- list(B1 = b1, B2 = b2, B3 = b3, B4 = b4, B5 = b5)[[name]]
+  m_data <- if (name %in% c("B1", "B2", "B3")) sample_D else sample_J
+  ct <- as.data.frame(coeftable(m))
+  full_coefficients <- bind_rows(full_coefficients, data.frame(
+    model = name,
+    outcome = as.character(formula(m)[[2]]),
+    term = rownames(ct),
+    beta = ct[, "Estimate"],
+    se = ct[, "Std. Error"],
+    p_value = ct[, "Pr(>|t|)"],
+    se_type = if (name == "B1") "HC1" else "clustered by country",
+    n = nobs(m),
+    clusters = if (name == "B1") NA else n_clusters(m, m_data)
+  ))
+}
+full_coefficients %>% mutate(across(c(beta, se, p_value), ~ round(.x, 4)))
+
+write.csv(full_coefficients, paste0(out_dir, "/baseline_full_coefficients_B1_B5.csv"), row.names = FALSE)
+```
+
+## Minimum detectable effects (B3, B5)
+
+```{r}
+## --- MDE: smallest true association the design detects with 80% power in a two-sided 5% test ---
+## MDE = (t_{0.975, G-1} + t_{0.80, G-1}) x clustered SE. With clustered SE the number of countries G, not the
+## number of firms, sets the degrees of freedom. The MDE uses only the SE, not the estimated beta: it describes
+## the precision of the design, it is not an after-the-fact power calculation for the observed estimate.
+## The outcomes are in logs, so the MDE in log points is converted to a percentage change: exp(MDE) - 1 for an
+## increase, exp(-MDE) - 1 for a decrease.
+mde_table <- data.frame()
+for (spec in list(list(name = "B3 log days, N_D", model = b3, data = sample_D),
+                  list(name = "B5 log cost (winsorized), N_J", model = b5, data = sample_J))) {
+  G <- n_clusters(spec$model, spec$data)
+  se_b <- unname(se(spec$model)["bribe_request"])
+  mde <- (qt(0.975, G - 1) + qt(0.80, G - 1)) * se_b
+  mde_table <- bind_rows(mde_table, data.frame(
+    model = spec$name, clusters = G, se_clustered = se_b,
+    mde_log_points = mde,
+    mde_pct_increase = 100 * (exp(mde) - 1),
+    mde_pct_decrease = 100 * (exp(-mde) - 1)
+  ))
+}
+mde_table %>% mutate(across(where(is.numeric), ~ round(.x, 3)))
+
+write.csv(mde_table, paste0(out_dir, "/mde_B3_B5.csv"), row.names = FALSE)
+```
+
+
+## Selection: B6
+
+If a request changed the chance that an application is completed (rather than pending or denied), the delay
+models on completed connections would compare selected groups. B6 checks this directly.
+
+```{r}
+## --- B6: LPMs of 1{pending} and 1{denied} on the bribe request, survey FE, clustered by country, S_A ---
+## Linear probability models, not logit: with survey FE and few denials (23 firms), a logit drops every survey
+## without a denial and suffers from the incidental-parameter problem; the LPM keeps all applicants and its
+## coefficient is directly the difference in probability (percentage points / 100).
+## No controls, as in the plan: the question is whether the status of requesters and non-requesters of the same
+## survey differs, not why.
+b6_pending <- feols(
+  pending ~ bribe_request
+  | survey,
+  cluster = ~country_iso3,
+  data = sample_A
+)
+
+b6_denied <- feols(
+  denied ~ bribe_request
+  | survey,
+  cluster = ~country_iso3,
+  data = sample_A
+)
+
+dropped_b6 <- c(
+  pending = dropped_rows(b6_pending, sample_A, c("pending", "bribe_request", "survey", "country_iso3"), "B6 pending"),
+  denied  = dropped_rows(b6_denied,  sample_A, c("denied", "bribe_request", "survey", "country_iso3"), "B6 denied")
+)
+
+selection_table <- etable(
+  b6_pending, b6_denied,
+  headers = c("B6 pending", "B6 denied"),
+  keep = "%bribe_request",
+  dict = c(bribe_request = "Bribe request", survey = "Survey"),
+  fitstat = ~ n + my,
+  extralines = list(
+    "Sample" = c("S_A", "S_A"),
+    "Clusters (countries)" = c(n_clusters(b6_pending, sample_A), n_clusters(b6_denied, sample_A)),
+    "Dropped for missing values" = dropped_b6
+  )
+)
+selection_table
+
+write.csv(selection_table, paste0(out_dir, "/selection_table_B6.csv"), row.names = FALSE)
+```
+
+
+## Summary of the coefficients
+
+```{r}
+## --- Bribe-request coefficient in every model ---
+models <- list(B1 = b1, B2 = b2, B3 = b3, B4 = b4, B5 = b5, "B6 pending" = b6_pending, "B6 denied" = b6_denied)
+summary_table <- data.frame()
+for (name in names(models)) {
+  m <- models[[name]]
+  summary_table <- bind_rows(summary_table, data.frame(
+    model = name,
+    beta = unname(coef(m)["bribe_request"]),
+    se = unname(se(m)["bribe_request"]),
+    p_value = unname(pvalue(m)["bribe_request"]),
+    n = nobs(m)
+  ))
+}
+summary_table %>% mutate(across(where(is.numeric), ~ round(.x, 4)))
+
+write.csv(summary_table, paste0(out_dir, "/coefficients_summary.csv"), row.names = FALSE)
+```

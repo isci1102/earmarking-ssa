@@ -1,0 +1,44 @@
+iso3,legal_family,cfa_zone,design_group,rec,rec_all,resource_rich,resource_group,notes
+AGO,lusophone_civil,none,lusophone_noncfa,SADC,SADC; ECCAS,1,oil_exporter,"rec: member of SADC and ECCAS, no customs union in force; SADC by rule"
+BDI,francophone_civil,none,francophone_noncfa,EAC,EAC; ECCAS; COMESA,0,non_resource_intensive,rec: EAC customs union applies; legal: Belgian civil-law origin
+BEN,francophone_civil,UEMOA,uemoa_francophone,ECOWAS,ECOWAS,0,non_resource_intensive,
+BFA,francophone_civil,UEMOA,uemoa_francophone,AES,AES,1,other_resource_intensive,"rec: left ECOWAS effective 29 Jan 2025 (AES); corpus law_year_max 2026, median 2021, 12% of allocations from 2025-26 texts -> AES. No ECOWAS or AES levy in the extracted data"
+BWA,anglophone_common,none,anglophone_common,SACU,SACU; SADC,1,other_resource_intensive,"legal: Roman-Dutch private law (mixed in comparative law), English-model public and tax law -> anglophone"
+CAF,francophone_civil,CEMAC,cemac_francophone,ECCAS,ECCAS,1,other_resource_intensive,
+CIV,francophone_civil,UEMOA,uemoa_francophone,ECOWAS,ECOWAS,0,non_resource_intensive,
+CMR,francophone_civil,CEMAC,cemac_francophone,ECCAS,ECCAS,1,oil_exporter,legal: bijural (common law in NW/SW regions) but public-finance and tax law are French-model and CEMAC-harmonised -> francophone civil
+COD,francophone_civil,none,francophone_noncfa,SADC,SADC; COMESA; ECCAS; EAC,1,other_resource_intensive,"rec: four memberships, applies no customs union (EAC since 2022, CET not applied); SADC by rule - weakest call. Corpus law_year_max 2023 (median 2015), after EAC accession, so timing does not change it; no regional destination in the data"
+COG,francophone_civil,CEMAC,cemac_francophone,ECCAS,ECCAS,1,oil_exporter,
+COM,francophone_civil,none,francophone_noncfa,SADC,SADC; COMESA,0,non_resource_intensive,"cfa: Comorian franc is a franc-zone currency but not CFA -> none; rec: SADC by rule (member since 2017; corpus law_year_max 2023, median 2015), alternative COMESA (its operative FTA); no regional destination in the data; legal: Islamic personal law beside French-model public law"
+CPV,lusophone_civil,none,lusophone_noncfa,ECOWAS,ECOWAS,0,non_resource_intensive,
+ETH,mixed,none,mixed,COMESA,COMESA; IGAD,0,non_resource_intensive,legal: never colonised; 1960 civil codes (civil-law drafting) with English-language federal proclamations and Anglo-American public-law influence -> mixed; rec: COMESA by rule (IGAD has no trade or fiscal regime)
+GAB,francophone_civil,CEMAC,cemac_francophone,ECCAS,ECCAS,1,oil_exporter,
+GHA,anglophone_common,none,anglophone_common,ECOWAS,ECOWAS,1,other_resource_intensive,
+GIN,francophone_civil,none,francophone_noncfa,ECOWAS,ECOWAS,1,other_resource_intensive,
+GMB,anglophone_common,none,anglophone_common,ECOWAS,ECOWAS,0,non_resource_intensive,
+GNB,lusophone_civil,UEMOA,cfa_nonfrancophone,ECOWAS,ECOWAS,0,non_resource_intensive,"legal: lusophone civil, but its public-finance framework transposes UEMOA directives (French model); that harmonisation is carried by cfa_zone, not legal_family"
+GNQ,hispanophone_civil,CEMAC,cfa_nonfrancophone,ECCAS,ECCAS,1,oil_exporter,legal: Spanish civil law with CEMAC-harmonised public finance; only hispanophone country (n = 1)
+KEN,anglophone_common,none,anglophone_common,EAC,EAC; COMESA; IGAD,0,non_resource_intensive,
+LBR,anglophone_common,none,anglophone_common,ECOWAS,ECOWAS,1,other_resource_intensive,legal: common law of US rather than English lineage -> anglophone
+LSO,anglophone_common,none,anglophone_common,SACU,SACU; SADC,0,non_resource_intensive,"legal: Roman-Dutch private law, English-model public and tax law -> anglophone"
+MDG,francophone_civil,none,francophone_noncfa,SADC,SADC; COMESA,0,non_resource_intensive,
+MLI,francophone_civil,UEMOA,uemoa_francophone,AES,AES,1,other_resource_intensive,"rec: left ECOWAS effective 29 Jan 2025 (AES); corpus law_year_max 2026, median 2025 (50% of allocations from 2025-26 texts) -> AES. No ECOWAS or AES levy in the extracted data"
+MOZ,lusophone_civil,none,lusophone_noncfa,SADC,SADC,0,non_resource_intensive,resource: IMF REO classes MOZ non-resource-intensive despite coal and LNG; likely to change in later vintages
+MUS,anglophone_common,none,anglophone_common,SADC,SADC; COMESA,0,non_resource_intensive,"legal: French-based civil code for private law, English-model public, tax and finance law -> anglophone"
+MWI,anglophone_common,none,anglophone_common,SADC,SADC; COMESA,0,non_resource_intensive,
+NAM,anglophone_common,none,anglophone_common,SACU,SACU; SADC,1,other_resource_intensive,"legal: Roman-Dutch private law, English-model public and tax law -> anglophone"
+NER,francophone_civil,UEMOA,uemoa_francophone,AES,AES,1,other_resource_intensive,"rec: left ECOWAS effective 29 Jan 2025 (AES); corpus law_year_max 2026, median 2025 (64% of allocations from 2025-26 texts) -> AES. No ECOWAS or AES levy in the extracted data"
+NGA,anglophone_common,none,anglophone_common,ECOWAS,ECOWAS,1,oil_exporter,
+RWA,mixed,none,mixed,EAC,EAC; ECCAS; COMESA,0,non_resource_intensive,"legal: Belgian civil-law origin, English-language and common-law-influenced reforms since EAC (2007) and Commonwealth (2009) accession; laws in three languages -> mixed (alternative: francophone civil by origin)"
+SEN,francophone_civil,UEMOA,uemoa_francophone,ECOWAS,ECOWAS,0,non_resource_intensive,"resource: oil and gas output since 2024, still non-resource-intensive in REO April 2026; likely to change"
+SLE,anglophone_common,none,anglophone_common,ECOWAS,ECOWAS,1,other_resource_intensive,
+STP,lusophone_civil,none,lusophone_noncfa,ECCAS,ECCAS,0,non_resource_intensive,
+SWZ,anglophone_common,none,anglophone_common,SACU,SACU; SADC; COMESA,0,non_resource_intensive,"legal: Roman-Dutch private law, English-model public and tax law -> anglophone"
+SYC,anglophone_common,none,anglophone_common,SADC,SADC; COMESA,0,non_resource_intensive,"legal: French-based civil code for private law, English-model public, tax and finance law -> anglophone"
+TCD,francophone_civil,CEMAC,cemac_francophone,ECCAS,ECCAS,1,oil_exporter,
+TGO,francophone_civil,UEMOA,uemoa_francophone,ECOWAS,ECOWAS,0,non_resource_intensive,
+TZA,anglophone_common,none,anglophone_common,EAC,EAC; SADC,1,other_resource_intensive,
+UGA,anglophone_common,none,anglophone_common,EAC,EAC; COMESA; IGAD,0,non_resource_intensive,
+ZAF,anglophone_common,none,anglophone_common,SACU,SACU; SADC,1,other_resource_intensive,"legal: Roman-Dutch private law, English-model public and tax law -> anglophone"
+ZMB,anglophone_common,none,anglophone_common,SADC,SADC; COMESA,1,other_resource_intensive,
+ZWE,anglophone_common,none,anglophone_common,SADC,SADC; COMESA,1,other_resource_intensive,"legal: Roman-Dutch private law, English-model public and tax law -> anglophone"
