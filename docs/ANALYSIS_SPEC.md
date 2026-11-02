@@ -60,9 +60,9 @@ Note for the text: the E1, E4 and E0 counts are incidental. They count only inst
 | A2 | What finances earmarks, and what do they finance? | **(a) Core heatmap** of `base_group` (12 rows, below) × COFOG division. Each cell shows the number of instrument–function links, labelled with the number of countries. **(a′) Zoom on 704** (main text): the same heatmap restricted to links to 704 Economic affairs, with its groups 7041–7049 as columns, because 704 holds over half of the links. **(b) Recipient-form shares.** **(c) One Sankey per country**, `base_group` → COFOG division, restricted legs, flows = number of links (not money). In the main text: 3–4 contrasting countries (e.g. one UEMOA, one CEMAC, one anglophone, one lusophone). All countries in an appendix of country profiles. **(d)** `instrument_type` (GFS) composition of earmarked instruments, country-equal and pooled (table): what kind of charges the counts are made of | instrument × division; (d) instrument | link counts; country-equal shares |
 | A3 | Is there an economic rationale? | Stacked bars of `benefit_link` (corrective / compensatory / benefit / sectoral / general_revenue / unlinked), overall and by legal family | instrument × division | share of links in each class |
 | A4 | How binding are earmarks? | Design table: E3 vs E2; `commitment_strength` (instrument maximum); vehicle; `legal_rank`; `determinacy` | instrument (commitment, E-class); allocation (vehicle, rank, determinacy) | country-equal shares |
-| A5 | Which earmarks are reform candidates? | Cross-table of benefit link × commitment strength. Highlight "unlinked or general revenue, and hard": rigid with no economic rationale | instrument × division | share of links in each cell |
-| A6 | Territorial and regional channels | Short subsection: derivation, equalization, subnational sharing; regional community levies (ECOWAS, UEMOA, CEMAC, SACU) | allocation | counts; country incidence |
-| A7 | Do legal traditions shape the design? | Groups: `design_group` (§0), which separates legal tradition from CFA harmonisation. Main contrasts: UEMOA and CEMAC vs non-CFA francophone (harmonisation within one tradition); non-CFA francophone vs anglophone (tradition outside the CFA zone). GNB, GNQ (CFA without the French tradition) and RWA, ETH (mixed) are labelled points, never group bars. **(a)** Recipient-form composition by group, read as legal forms as written (vehicle note below). **(b)** Design profile: E3 share, hard-commitment share, share enacted in finance laws, benefit-linked share, fund-or-agency share. Country dots with the group median and n; context columns: the country's share of finance-law documents in its corpus (`{ISO3}_corpus.csv`, `doc_type`) and `law_year_median`; with and without class placeholders. **(c)** One pre-specified check: country-level fractional logit of each design share on group dummies, `resource_group` and log documents, HC3 errors; read as an association | (a), (b) instrument and allocation (labelled); (c) country | country-level values; group medians |
+| A5 | Which earmarks are reform candidates? **Deferred** (2 Nov 2026) to a later deep-dive project; not in the first pass. | Cross-table of benefit link × commitment strength. Highlight "unlinked or general revenue, and hard": rigid with no economic rationale | instrument × division | share of links in each cell |
+| A6 | Territorial and regional channels | **Subnational sharing and decentralisation (short):** allocations to or through subnational tiers (`recipient_level = subnational`) of assigned instruments (E1 + E2 + E3, social contributions excluded), all share levels (the sub-keys sit here). Administrative retentions (collection costs, payments to local collectors or chiefs) are never sharing: they are excluded from the types of sharing and the figure, and reported as one count (decided 2 Nov 2026). Per country: instruments shared, restricted vs unrestricted, type of sharing (`assignment_type`: general or specific tax sharing, equalisation, derivation, devolved earmark, functional earmark of a tier's body), base groups shared. One figure (type of sharing by country) and country incidence in the text. **Regional bodies:** one count only (allocations to `supranational_body`, and countries with any), with the caveat that they are recorded only where a national text restates the levy; community acts were not collected (decided 2 Nov 2026) | allocation | counts; country incidence |
+| A7 | Do legal traditions shape the design? | Groups: `design_group` (§0), which separates legal tradition from CFA harmonisation. Main contrasts: UEMOA and CEMAC vs non-CFA francophone (harmonisation within one tradition); non-CFA francophone vs anglophone (tradition outside the CFA zone). GNB, GNQ (CFA without the French tradition) and RWA, ETH (mixed) are labelled points, never group bars. **(a)** Recipient-form composition by group, read as legal forms as written (vehicle note below). **(b)** Design profile: E3 share, hard-commitment share, benefit-linked share, fund-or-agency share. Country dots with the group median and n; context column: `law_year_median`; with and without class placeholders. **(c)** One pre-specified check: country-level fractional logit of each design share on group dummies, `resource_group` and log documents, HC3 errors; read as an association | (a), (b) instrument and allocation (labelled); (c) country | country-level values; group medians |
 
 **Base groups** (`base_group`, added in `00_load.R`; used by A2a, A2c and A7). `base_category` records what is taxed; GFS (`instrument_type`) records the economic nature of the charge and is used in A2d and B1. Order as listed:
 
@@ -103,23 +103,23 @@ The legal-family grouping (`legal_family`) runs through A1–A5 as a breakdown w
 
 ## 3. Analysis with external data (section B)
 
-**B1. Revenue exposed to earmarking** (WoRLD; ICTD-UNU-WIDER GRD as a check).
+*Revised 2 Nov 2026: section B is organised around two questions for the first external report. The former B1 (revenue exposure and big-ticket earmarks) is dropped: one small levy flags a whole revenue category, so the exposure measure mostly reflects coding. Statutory magnitudes move to B4. B3 is deferred. WGI enters only the validation (§4.1): better-governed countries publish their law more completely, so a link between earmarking and WGI could reflect corpus completeness.*
 
-- **(i) Exposure.**
-  $$\text{Exposure}_c=\sum_k \frac{R_{ck}}{R_c}\,\mathbf 1\{\exists\, i\in E2\cup E3 \text{ in } c:\ \text{gfs}(i)\in k\}$$
-  Here $k$ is the most detailed revenue category WoRLD provides; map the instrument `gfs_code`s onto it and document the mapping. It is an **upper bound**: one small levy flags its whole category. Exhibit: exposure by country, and the share of countries with an earmark in each category.
-- **(ii) Big-ticket earmarks.** When instrument $i$ *is* its category $k$ (VAT, PIT, CIT, import duties, social contributions):
-  $$\text{ER}_{ci}=s_i\cdot R_{ck}/\text{GDP}_c$$
-  where $s_i$ = `restricted_share_total`. Use single-instrument groups only, and report pool cases separately (the pro-rata pool assumption). Exhibit: a short table of the largest statutory earmarks as % of GDP and % of revenue.
+**Common reporting for B1 and B2.** Unit: country. Earmarking measures: the four Table A1 shares of the headline set (exclusive E3 share, hard-commitment share, fund-or-agency share, benefit-linked share), never counts, because counts depend on the corpus. Exhibits: labelled points (ISO3), coloured by `resource_group`; Spearman ρ with the number of countries and the leave-one-out range of ρ. Read as associations: causality can run both ways.
 
-**B2. Earmarking and budget comprehensiveness** (PEFA PI-6).
-- Off-budget vehicle share (from `budget_status`) vs PI-6.2 (revenue outside financial reports) and PI-6.3 (reports of extrabudgetary units). Grades are ordinal.
-- Exhibit: a labelled scatter or grouped dot plot, Spearman ρ, a leave-one-out check, the number of countries.
-- Read as an association.
+**B1. Earmarking and tax revenue** (WoRLD, all 43 countries).
+- Question: are the design features of earmarking associated with how much tax a country collects?
+- Revenue (WoRLD, % of GDP, mean 2022–2024). Main: total tax revenue and the four types observed in all 43 countries: taxes on income, profits and capital gains; taxes on goods and services; taxes on international trade; other non-tax revenue (fees, fines, sales). Secondary, with their n: general taxes on goods and services (VAT, 37), excises (34), personal (33) and corporate (34) income taxes. Property taxes (20) are left out. Robustness: the latest year, and total revenue.
+- Exhibit: four panels for total tax revenue (vertical) against each of the four shares. One table with every revenue measure × share (ρ, n, leave-one-out range), all reported: with 20 or more correlations, one or two can look strong by chance, so none is singled out. ρ over all countries, and without the oil exporters (resource revenue moves their tax ratio for reasons unrelated to earmarking).
+- Later (not in the first report): matched types, e.g. whether countries that earmark excises collect more or less excise revenue, using a GFS-to-WoRLD mapping.
 
-**B3. Resource revenue and compensatory design** (WoRLD resource revenue).
-- Resource revenue share vs the share of compensatory or derivation links among earmarks on `extractive_resources` bases.
-- Same reporting as B2.
+**B2. Earmarking and budget comprehensiveness** (PEFA PI-6, 2016 framework; 31 countries, 28 for PI-6.2 and 29 for PI-6.3).
+- Question: do countries whose earmarks run through funds and agencies score lower on the reporting of revenue and units outside the budget?
+- Earmarking measure: the fund-or-agency share. **Interim:** it is a legal form, not budget status, until `budget_status` is built (PROJECT_STATE, issue (d)); the off-budget share then replaces it. The hard-commitment share is shown as a second measure.
+- PEFA: PI-6.2 (revenue outside financial reports), PI-6.3 (reports of extrabudgetary units) and the overall PI-6, as ordinal grades (A = 4 to D = 1; D* coded D and flagged; NR missing); the latest assessment, with its year. Robustness: assessments from 2018 or later.
+- Exhibit: dot plot, share (horizontal) by grade (vertical), labelled points.
+
+**B3. Resource revenue and compensatory design.** Deferred: a continuous resource-revenue share exists for only 9 (WoRLD) to 18 (GRD) countries.
 
 Interpretation rule for B: associations only. Legal family, CFA membership and colonial history are confounded with every institutional variable.
 
@@ -159,14 +159,14 @@ Interpretation rule for B: associations only. Legal family, CFA membership and c
 | `01_descriptives.R` | D1, D2 |
 | `02_composition.R` | A1, A2a–b, A3 |
 | `03_sankey.R` | A2c: one PDF page per country (ggalluvial) |
-| `04_design.R` | A4, A5, A7 |
+| `04_design.R` | A4, A7 (A5 deferred) |
 | `05_territorial.R` | A6 |
 | `06_examples.R` | illustrative examples (§2): heatmap cells, benefit-link classes, country profiles; drawn by rule, hand-checked |
 | `qmd/first_results_database.qmd` | first preliminary report: assembles the D and A outputs with comments; reads saved outputs only and computes nothing new |
 | `10_external_prepare.R` | reads the raw downloads (WoRLD, GRD, PEFA PI-6; resource revenue) from `analysis_data\supporting-data\` → `ssa_external_indicators_prelim_2026-11.rds`, one row per country, with the source and years recorded for each variable |
-| `11_exposure.R` | B1 |
-| `12_associations.R` | B2, B3 |
-| `qmd/first_results_external.qmd` | second preliminary report: the B outputs |
+| `11_tax_revenue.R` | B1 |
+| `12_pefa.R` | B2 (B3 deferred) |
+| `qmd/first_results_external.qmd` | second preliminary report: B1 and B2 |
 | `run_all.R` | regenerates every table and figure from the two `.rds` files |
 
 Order: `00`–`06` → `first_results_database.qmd` → download the external data → `10`–`12` → `first_results_external.qmd`. Both reports are preliminary.

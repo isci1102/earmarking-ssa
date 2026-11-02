@@ -21,7 +21,7 @@
 ## ============================================================================
 
 source(here::here("analysis", "paths.R"))
-source(here::here("analysis", "helpers.R"))        # indicator legs and instrument × division links
+source(here::here("analysis", "helpers.R"))        # indicator legs, links, share checks, country-equal composition
 source(here::here("analysis", "theme_earmark.R"))  # colours, theme, save_fig()
 
 library(dplyr)
@@ -38,45 +38,6 @@ for (f in c(file_load_summary, file_table_a1)) {
 }
 load_summary <- read.csv(file_load_summary)
 table_a1_01  <- read.csv(file_table_a1)
-
-## Stop if a share is missing or outside [0, 1]
-check_share <- function(x, name) {
-  if (any(is.na(x) | x < 0 | x > 1)) stop(name, ": share missing or outside [0, 1]")
-}
-
-
-## --- Country-equal composition ---
-## units: one row per unit (instrument, link or allocation), with its country and category columns.
-## Returns one row per country × category, with zeros for the categories a country does not have (the category
-## columns are factors, so complete() uses every level): n, and share = n / the country's number of units.
-## The country-equal share of a category is the mean of share over countries, zeros included. Only countries
-## with at least one unit enter the mean: a share is undefined for the others.
-country_composition <- function(units, categories, name) {
-  by_country <- units %>%
-    count(country, across(all_of(categories))) %>%
-    complete(country, !!!syms(categories), fill = list(n = 0L)) %>%
-    group_by(country) %>%
-    mutate(share = n / sum(n)) %>%
-    ungroup()
-  sums <- by_country %>% group_by(country) %>% summarise(total = sum(share))
-  if (any(abs(sums$total - 1) > 1e-9)) stop(name, ": country shares do not sum to 1")
-  by_country
-}
-
-## By category (and by group, e.g. legal_family): number of countries with at least one unit, number of
-## countries in the mean, country-equal share, pooled count and pooled share (n / all units of the group).
-summarise_composition <- function(by_country, categories, group = character(0)) {
-  by_country %>%
-    group_by(across(all_of(c(group, categories)))) %>%
-    summarise(n_countries = sum(n > 0),
-              countries_in_mean = n(),
-              share_country_equal = mean(share),
-              n = sum(n),
-              .groups = "drop") %>%
-    group_by(across(all_of(group))) %>%
-    mutate(share_pooled = n / sum(n)) %>%
-    ungroup()
-}
 
 
 ## --- Labels for tables and figures ---

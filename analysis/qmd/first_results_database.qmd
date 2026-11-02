@@ -1,0 +1,691 @@
+---
+title: "First results on the database"
+subtitle: "De jure revenue earmarking in 43 Sub-Saharan African countries. Preliminary, before validation."
+format:
+  html:
+    embed-resources: true
+    toc: true
+    toc-depth: 2
+    toc-location: left
+    number-sections: true
+    theme: cosmo
+    fig-align: center
+    include-in-header:
+      text: |
+        <style>
+          h1, h2, h3 { color: #0A2B4F; }
+          a { color: #245C9E; }
+          .table { font-size: 0.85rem; }
+          .wide-table { overflow-x: auto; }
+        </style>
+execute:
+  echo: false
+  warning: false
+  message: false
+knitr:
+  opts_chunk:
+    out.width: "100%"
+---
+
+```{r setup}
+## ============================================================================
+## first_results_database.qmd: first preliminary report on the database (ANALYSIS_SPEC §6)
+## Assembles the D and A outputs of one pass with comments. Reads the saved tables and figures
+## of analysis/output/{run_date}/ only and computes nothing new: the only arithmetic is sums,
+## medians, minima and maxima of saved values. Definitions in the boxes come from docs/GLOSSARY.md.
+## Render (Quarto bundled with RStudio):
+##   quarto render analysis/qmd/first_results_database.qmd --output-dir ../output/2026-11-02
+## ============================================================================
+
+source(here::here("analysis", "paths.R"))   # dir_tables, dir_figures, run_date
+
+library(dplyr)
+library(tidyr)
+library(knitr)
+
+
+## --- Helpers: read a saved output, pick one value, format ---
+read_table <- function(name, ...) {
+  f <- file.path(dir_tables, paste0(name, ".csv"))
+  if (!file.exists(f)) stop("Saved table not found: ", f)
+  read.csv(f, ...)
+}
+
+## Figures are referenced by a path relative to this qmd, so that embed-resources finds them
+fig_path <- function(name, ext = "png") {
+  f <- file.path(dir_figures, paste0(name, ".", ext))
+  if (!file.exists(f)) stop("Saved figure not found: ", f)
+  xfun::relative_path(f, dir = getwd(), use.. = TRUE)
+}
+
+## One value from a saved table: stop() unless the filter selects exactly one row
+val <- function(df, column, ...) {
+  x <- df %>% filter(...) %>% pull(all_of(column))
+  if (length(x) != 1) stop("val(): ", length(x), " rows selected for ", column)
+  x
+}
+
+pct  <- function(x, digits = 0) paste0(formatC(100 * x, format = "f", digits = digits), "%")
+num  <- function(x) prettyNum(x, big.mark = ",")   # element by element, so integers stay integers
+pint <- function(x, lo, hi) paste0(pct(x), " [", round(100 * lo), ", ", round(100 * hi), "]")   # share with 95% interval
+
+## "a, b and c"
+and_list <- function(x) {
+  if (length(x) <= 1) return(x)
+  paste(paste(x[-length(x)], collapse = ", "), "and", x[length(x)])
+}
+
+
+## --- Labels: country names for the text (tables keep ISO3), and category labels ---
+country_names <- c(AGO = "Angola", BDI = "Burundi", BEN = "Benin", BFA = "Burkina Faso", BWA = "Botswana",
+                   CAF = "the Central African Republic", CIV = "Côte d'Ivoire", CMR = "Cameroon",
+                   COD = "the Democratic Republic of the Congo", COG = "the Republic of the Congo",
+                   COM = "Comoros", CPV = "Cabo Verde", ETH = "Ethiopia", GAB = "Gabon", GHA = "Ghana",
+                   GIN = "Guinea", GMB = "The Gambia", GNB = "Guinea-Bissau", GNQ = "Equatorial Guinea",
+                   KEN = "Kenya", LBR = "Liberia", LSO = "Lesotho", MDG = "Madagascar", MLI = "Mali",
+                   MOZ = "Mozambique", MUS = "Mauritius", MWI = "Malawi", NAM = "Namibia", NER = "Niger",
+                   NGA = "Nigeria", RWA = "Rwanda", SEN = "Senegal", SLE = "Sierra Leone",
+                   STP = "São Tomé and Príncipe", SWZ = "Eswatini", SYC = "Seychelles", TCD = "Chad",
+                   TGO = "Togo", TZA = "Tanzania", UGA = "Uganda", ZAF = "South Africa", ZMB = "Zambia",
+                   ZWE = "Zimbabwe")
+cname <- function(iso3) {
+  if (any(!iso3 %in% names(country_names))) stop("No name for: ", paste(setdiff(iso3, names(country_names)), collapse = ", "))
+  unname(country_names[iso3])
+}
+
+family_labels <- c(francophone_civil = "Francophone civil law", anglophone_common = "Anglophone common law",
+                   lusophone_civil = "Lusophone civil law", hispanophone_civil = "Hispanophone civil law",
+                   mixed = "Mixed")
+design_labels <- c(uemoa_francophone = "UEMOA francophone", cemac_francophone = "CEMAC francophone",
+                   francophone_noncfa = "Francophone, non-CFA", anglophone_common = "Anglophone common law",
+                   lusophone_noncfa = "Lusophone, non-CFA", cfa_nonfrancophone = "CFA, non-francophone",
+                   mixed = "Mixed")
+## Main design groups: order of the A2c main-text countries
+design_main <- c("uemoa_francophone", "cemac_francophone", "francophone_noncfa", "anglophone_common", "lusophone_noncfa")
+base_labels <- c(broad_bases = "Broad bases", extractive = "Extractive", fuel_energy = "Fuel and energy",
+                 forestry_fisheries_agriculture = "Forestry, fisheries and agriculture",
+                 environment_water = "Environment and water", telecom_media = "Telecom and media",
+                 transport = "Transport", financial_insurance = "Financial and insurance",
+                 harmful_consumption = "Harmful consumption", gambling_tourism = "Gambling and tourism",
+                 payroll_property = "Payroll and property", services_acts_other = "Services, acts and other")
+cofog_labels <- c(`701` = "701 General public services", `702` = "702 Defence", `703` = "703 Public order and safety",
+                  `704` = "704 Economic affairs", `705` = "705 Environmental protection",
+                  `706` = "706 Housing and community amenities", `707` = "707 Health",
+                  `708` = "708 Recreation, culture and religion", `709` = "709 Education",
+                  `710` = "710 Social protection", unallocated = "unallocated")
+cofog704_labels <- c(`7041` = "7041 General economic, commercial and labour affairs",
+                     `7042` = "7042 Agriculture, forestry, fishing and hunting", `7043` = "7043 Fuel and energy",
+                     `7044` = "7044 Mining, manufacturing and construction", `7045` = "7045 Transport",
+                     `7046` = "7046 Communication", `7047` = "7047 Other industries",
+                     `7048` = "7048 R&D economic affairs", `7049` = "7049 Economic affairs n.e.c.",
+                     not_coded = "not coded")
+form_labels <- c(agency = "Agency", fund = "Fund", program_or_purpose = "Programme or purpose",
+                 special_account = "Special account", non_government_body = "Non-government body",
+                 social_security_institution = "Social security institution",
+                 subnational_government = "Subnational government", ministry_or_vote = "Ministry or vote",
+                 supranational_body = "Supranational body", foreign_government = "Foreign government")
+type_labels <- c(fine_penalty = "Fines and penalties", administrative_fee = "Administrative fees",
+                 use_permission_tax = "Use-permission taxes", specific_services_tax = "Taxes on specific services",
+                 resource_rent = "Resource rents", excise = "Excises", trade_tax = "Trade taxes",
+                 mixed_class = "Mixed classes", sales_user_charge = "Sales and user charges",
+                 other_nontax = "Other non-tax revenue", other_goods_services_tax = "Other taxes on goods and services",
+                 payroll_tax = "Payroll taxes", other_tax = "Other taxes", income_profits_tax = "Income and profits taxes",
+                 general_consumption_tax = "General consumption taxes", property_tax = "Property taxes",
+                 social_contribution = "Social contributions")
+benefit_labels <- c(corrective = "Corrective", compensatory = "Compensatory", benefit = "Benefit",
+                    sectoral = "Sectoral", general_revenue = "General revenue", unlinked = "Unlinked")
+sharing_labels <- c(tax_sharing_general = "General tax sharing", tax_sharing_specific = "Specific tax sharing",
+                    equalization_transfer = "Equalisation transfer", derivation_transfer = "Derivation transfer",
+                    hybrid_devolved_earmark = "Devolved earmark", earmark_functional = "Functional earmark of a tier's body")
+## Design groups in running text
+design_prose <- c(uemoa_francophone = "UEMOA countries", cemac_francophone = "CEMAC countries",
+                  francophone_noncfa = "non-CFA francophone countries", anglophone_common = "anglophone countries",
+                  lusophone_noncfa = "lusophone countries")
+measure_labels <- c(E3_share = "E3 (exclusive) share", hard_commitment_share = "Hard-commitment share",
+                    benefit_linked_share = "Benefit-linked share", fund_agency_share = "Fund-or-agency share")
+
+
+## --- Saved tables of the headline set (earmarked or assigned, social contributions excluded) ---
+table1      <- read_table("01_table1")
+table_a1    <- read_table("01_tableA1")
+table_a1_columns <- read_table("01_tableA1_columns")
+a1          <- read_table("02_A1_by_country")
+a2a         <- read_table("02_A2a_links")
+a2a_zoom    <- read_table("02_A2a_zoom704")
+a2b         <- read_table("02_A2b_recipient_form")
+a2d         <- read_table("02_A2d_instrument_type")
+a3          <- read_table("02_A3_benefit_link")
+sankey_candidates <- read_table("03_sankey_candidates")
+sankey_flows      <- read_table("03_sankey_flows")
+a4_instrument <- read_table("04_A4_instrument")
+a4_allocation <- read_table("04_A4_allocation")
+## A7(c), the regression check, is held back for review: its tables are not read
+a7a         <- read_table("04_A7a_recipient_form")
+a7b_profile <- read_table("04_A7b_profile")
+a7b_groups  <- read_table("04_A7b_group_summary")
+a6_country  <- read_table("05_A6_subnational_by_country")
+a6_incidence <- read_table("05_A6_incidence")
+a6_regional <- read_table("05_A6_regional_count")
+
+## Every country-level table holds the 43 countries
+for (x in list(table_a1, a1, a7b_profile, a6_country)) {
+  if (nrow(x) != 43 || n_distinct(x[[intersect(c("country"), names(x))]]) != 43) stop("A country table does not have 43 countries")
+}
+n_countries <- val(table1, "value", item == "countries")
+if (n_countries != 43) stop("Table 1: expected 43 countries, found ", n_countries)
+```
+
+::: {.callout-warning title="Status of these results"}
+```{r status}
+## Law year per country (Table A1): the latest text in the corpus, never one year for all
+law_year_min    <- min(table_a1$law_year_max)
+law_year_max    <- max(table_a1$law_year_max)
+alloc_not_high  <- val(table1, "value", item == "share with alloc_ai_confidence not high")
+instr_not_high  <- val(table1, "value", item == "share with instr_ai_confidence not high")
+```
+
+- **Preliminary.** These results come before the validation of ANALYSIS_SPEC §4 (recall, precision and κ, stability, corpus completeness), which must come before any institutional result is written up.
+- **Coverage.** `r n_countries` countries (Eritrea, Mauritania, Somalia, South Sudan and Sudan are not covered). De jure: the tables describe what the law assigns, not what is collected or spent. One cross-section, no census of instruments, so no prevalence.
+- **Law year.** Each country is described by the law in force as of the latest text in its corpus. That year differs by country (from `r law_year_min` to `r law_year_max`) and is given per country in Table A1 (`law_year_max`, `law_year_median`).
+- **AI confidence.** `r pct(alloc_not_high)` of top-level allocations and `r pct(instr_not_high)` of instruments are coded with less than high confidence (pooled).
+- **Not in this report.** A5 (reform candidates) is deferred to a later project. The regression check of A7 (predicted shares by design group) is held back for review. Section B (external data: WoRLD, GRD, PEFA) comes in a second report.
+- **Pass.** Tables and figures of the pass of `r run_date`, read from `analysis/output/`; nothing is recomputed here.
+:::
+
+
+# Descriptive overview (D)
+
+::: {.callout-note title="How to read this"}
+An **instrument** is one charge (tax, levy, fee, fine) whose proceeds the law assigns somewhere; a *class placeholder* stands for a class of charges the law names without listing them. An **allocation** is one assignment of an instrument's proceeds to one destination; the **top level** is the first split of the gross proceeds.
+
+*Unit:* stated in each row. *Set:* every instrument in the database (all E-classes, social contributions included).
+:::
+
+```{r d1}
+## Table 1 as saved; shares shown as percentages, means with one decimal
+n_instruments  <- val(table1, "value", item == "instruments")
+n_documents    <- val(table1, "value", item == "documents read")
+n_placeholders <- val(table1, "value", item == "row_kind class_placeholder")
+n_e3 <- val(table1, "value", item == "earmark_class E3")
+n_e2 <- val(table1, "value", item == "earmark_class E2")
+n_e4 <- val(table1, "value", item == "earmark_class E4")
+n_e1 <- val(table1, "value", item == "earmark_class E1")
+share_unallocated <- val(table1, "value", item == "share of restricted allocations with cofog_division = unallocated")
+
+table1_show <- table1 %>%
+  mutate(is_share = grepl("^share", unit),
+         value  = ifelse(is_share, pct(value, 1), num(value)),
+         across(c(country_mean), ~ ifelse(is.na(.x), "", formatC(.x, format = "f", digits = 1))),
+         across(c(country_median, country_min, country_max), ~ ifelse(is.na(.x), "", num(.x)))) %>%
+  select(-is_share)
+
+kable(table1_show, col.names = c("Item", "Unit", "Total", "Mean per country", "Median", "Min", "Max"),
+      align = "llrrrrr", caption = "Table 1. The database at a glance")
+```
+
+The database holds `r num(n_instruments)` instruments and classes of charges in `r n_countries` countries, coded from `r num(n_documents)` documents. Per country, the number of instruments runs from `r val(table1, "country_min", item == "instruments")` to `r val(table1, "country_max", item == "instruments")` (median `r val(table1, "country_median", item == "instruments")`). E3 is the largest class with `r num(n_e3)` instruments, followed by E2 (`r num(n_e2)`) and E4 (`r num(n_e4)`); the E1, E4 and E0 counts are incidental, because they count only the instruments the corpus happens to assign in those ways. Class placeholders are `r num(n_placeholders)` instruments (`r pct(n_placeholders / n_instruments)`), and `r pct(share_unallocated, 1)` of restricted top-level allocations have no COFOG division.
+
+Appendix Table A1 gives the same counts and the four design shares for each country.
+
+
+# Analysis on the database (A)
+
+## A1. How much earmarking, and where?
+
+::: {.callout-note title="How to read this"}
+The **earmarked set** is E2 + E3: instruments with at least one restricted destination. E3 (exclusive) sends all proceeds to restricted destinations, apart from small collection-cost shares; E2 (partial) sends part to the general budget.
+
+*Unit:* instrument (left panel); allocation, top level, restricted legs, a pool counted once (right panel). *Set:* earmarked, social contributions excluded. Shares are country-equal.
+:::
+
+```{r a1}
+n_earmarked   <- sum(a1$n_earmarked)
+n_alloc_restr <- sum(a1$n_alloc_top_restricted)
+a1_min <- a1 %>% filter(n_earmarked == min(n_earmarked))
+a1_max <- a1 %>% filter(n_earmarked == max(n_earmarked))
+e3_min <- a1 %>% filter(E3_share == min(E3_share))
+e3_max <- a1 %>% filter(E3_share == max(E3_share))
+```
+
+```{r a1-fig, fig.cap = "A1. Earmarked instruments and restricted allocations, by country"}
+include_graphics(fig_path("02_A1_countries"))
+```
+
+The earmarked set holds `r num(n_earmarked)` instruments and classes of charges, with `r num(n_alloc_restr)` restricted top-level allocations. Per country, it runs from `r min(a1$n_earmarked)` instruments (`r and_list(cname(a1_min$country))`) to `r max(a1$n_earmarked)` (`r and_list(cname(a1_max$country))`), with a median of `r median(a1$n_earmarked)`. These counts depend on corpus completeness and on how each legal system splits charges, so we compare countries by shares within the earmarked set.
+
+The E3 share has a median of `r pct(median(a1$E3_share))` across countries. It runs from `r pct(min(a1$E3_share))` in `r and_list(cname(e3_min$country))` to `r pct(max(a1$E3_share))` in `r and_list(cname(e3_max$country))`. Across countries, the median fund-or-agency share is `r pct(median(table_a1$fund_agency_share))`, the median hard-commitment share `r pct(median(table_a1$hard_commitment_share))` and the median benefit-linked share of links `r pct(median(table_a1$benefit_linked_share))` (Table A1).
+
+
+## A2. What finances earmarks, and what do they finance?
+
+::: {.callout-note title="How to read this"}
+A **link** is one instrument × one COFOG division it finances, through restricted assignments only; heatmaps, Sankeys and benefit links count links. **Base groups** are 12 groups of what is taxed (ANALYSIS_SPEC §2). Links are counts of legal assignments, not revenue.
+
+*Unit:* link (A2a, A2c); allocation (A2b); instrument (A2d). *Set:* earmarked, social contributions excluded. Shares are country-equal unless stated.
+:::
+
+### A2a. Source × function heatmap
+
+```{r a2a}
+## Shares of links by division: sum of the saved cell shares over base groups
+a2a_division <- a2a %>%
+  group_by(cofog_division) %>%
+  summarise(n_links = sum(n_links), share_country_equal = sum(share_country_equal), .groups = "drop")
+n_links_total <- sum(a2a_division$n_links)
+if (abs(sum(a2a_division$share_country_equal) - 1) > 1e-6) stop("A2a: division shares do not sum to 1")
+share_704 <- val(a2a_division, "share_country_equal", cofog_division == "704")
+second_division <- a2a_division %>%
+  filter(!cofog_division %in% c("704", "unallocated")) %>%
+  slice_max(share_country_equal, n = 1)
+top_cells <- a2a %>% arrange(desc(n_links)) %>% slice(1:3)
+n_unallocated <- val(a2a_division, "n_links", cofog_division == "unallocated")
+```
+
+```{r a2a-fig, fig.cap = "A2a. Base group × COFOG division: number of links (label: number of countries)"}
+include_graphics(fig_path("02_A2a_heatmap"))
+```
+
+Of the `r num(n_links_total)` links, division 704 Economic affairs receives `r pct(share_704)` (`r num(val(a2a_division, "n_links", cofog_division == "704"))` links). The next division is `r cofog_labels[second_division$cofog_division]`, with `r pct(second_division$share_country_equal)`. The largest cell is `r tolower(base_labels[top_cells$base_group[1]])` × 704, with `r top_cells$n_links[1]` links in `r top_cells$n_countries[1]` countries, followed by `r tolower(base_labels[top_cells$base_group[2]])` × 704 (`r top_cells$n_links[2]`) and `r tolower(base_labels[top_cells$base_group[3]])` × 704 (`r top_cells$n_links[3]`). Another `r n_unallocated` links (`r pct(val(a2a_division, "share_country_equal", cofog_division == "unallocated"))`) have no COFOG division.
+
+### A2a′. Zoom on 704 Economic affairs
+
+```{r a2a-zoom}
+## Shares of the 704 pairs by COFOG group: sum of the saved cell shares over base groups
+zoom_group <- a2a_zoom %>%
+  group_by(cofog_group) %>%
+  summarise(n_pairs = sum(n_pairs), share_country_equal = sum(share_country_equal), .groups = "drop")
+zoom_top_group <- zoom_group %>% slice_max(share_country_equal, n = 1)
+zoom_empty     <- zoom_group %>% filter(n_pairs == 0)
+zoom_cells     <- a2a_zoom %>% arrange(desc(n_pairs)) %>% slice(1:4)
+cell_text <- paste0(tolower(base_labels[zoom_cells$base_group]), " × ", zoom_cells$cofog_group,
+                    " (", zoom_cells$n_pairs, ")")
+```
+
+```{r a2a-zoom-fig, fig.cap = "A2a′. Base group × COFOG group within 704: number of instrument × group pairs"}
+include_graphics(fig_path("02_A2a_zoom704"))
+```
+
+Within 704, `r cofog704_labels[zoom_top_group$cofog_group]` has the largest share of pairs (`r pct(zoom_top_group$share_country_equal)`, `r zoom_top_group$n_pairs` pairs). The four largest cells pair a base group with the COFOG group of the same sector: `r and_list(cell_text)`. `r and_list(cofog704_labels[zoom_empty$cofog_group])` has no pair and is left out of the figure. An instrument that finances two 704 groups counts in both.
+
+### A2b. Recipient forms
+
+```{r a2b}
+n_alloc_a2b <- sum(a2b$n_allocations)
+a2b_ordered <- a2b %>% arrange(desc(share_country_equal))
+```
+
+```{r a2b-fig, fig.cap = "A2b. Recipient forms of restricted top-level allocations"}
+include_graphics(fig_path("02_A2b_recipient_form"))
+```
+
+Agencies receive `r pct(val(a2b, "share_country_equal", recipient_form == "agency"))` of the `r num(n_alloc_a2b)` restricted top-level allocations and funds `r pct(val(a2b, "share_country_equal", recipient_form == "fund"))`. Programmes or purposes follow with `r pct(val(a2b, "share_country_equal", recipient_form == "program_or_purpose"))` and special accounts with `r pct(val(a2b, "share_country_equal", recipient_form == "special_account"))`. All `r min(val(a2b, "n_countries", recipient_form == "agency"), val(a2b, "n_countries", recipient_form == "fund"))` countries have at least one allocation to an agency and one to a fund. These are legal forms as written: a fund is anything the law calls a fund, which says nothing about its budget status.
+
+### A2d. Instrument types
+
+```{r a2d}
+a2d_show <- a2d %>%
+  arrange(desc(share_country_equal)) %>%
+  transmute(type = type_labels[instrument_type], n_instruments, n_countries,
+            country_equal = pct(share_country_equal, 1), pooled = pct(share_pooled, 1))
+if (val(a2b, "n_countries", recipient_form == "agency") != 43 || val(a2b, "n_countries", recipient_form == "fund") != 43) stop("A2b: agency or fund not in every country")
+if (any(is.na(a2d_show$type))) stop("A2d: instrument_type without a label")
+a2d_max_gap <- max(abs(a2d$share_country_equal - a2d$share_pooled))
+
+kable(a2d_show, col.names = c("Instrument type (GFS)", "Instruments", "Countries", "Country-equal share", "Pooled share"),
+      align = "lrrrr", caption = "A2d. Instrument types of earmarked instruments")
+```
+
+Fines and penalties are the largest type of earmarked instrument (`r pct(val(a2d, "share_country_equal", instrument_type == "fine_penalty"))`), followed by administrative fees (`r pct(val(a2d, "share_country_equal", instrument_type == "administrative_fee"))`) and use-permission taxes (`r pct(val(a2d, "share_country_equal", instrument_type == "use_permission_tax"))`). Taxes on broad bases are few: income and profits taxes are `r pct(val(a2d, "share_country_equal", instrument_type == "income_profits_tax"), 1)` and general consumption taxes `r pct(val(a2d, "share_country_equal", instrument_type == "general_consumption_tax"), 1)`. Country-equal and pooled shares differ by at most `r round(100 * a2d_max_gap, 1)` percentage points. These are shares of the earmarked set, not shares of all charges in force.
+
+### A2c. One Sankey per country
+
+```{r a2c}
+## Main-text countries (provisional) and the reason for each choice, from 03_sankey_candidates.csv
+sankey_main <- sankey_candidates %>% filter(main_text) %>%
+  mutate(design_group = factor(design_group, levels = design_main)) %>% arrange(design_group)
+if (nrow(sankey_main) != 4) stop("A2c: expected 4 main-text countries, found ", nrow(sankey_main))
+tie_zmb <- sankey_candidates %>% filter(country == "SWZ")
+tie_cpv <- sankey_candidates %>% filter(country == "AGO")
+for (iso in sankey_main$country) fig_path(paste0("03_A2c_sankey_", iso))   # stop() if a figure is missing
+```
+
+::: {.callout-note title="How to read the Sankeys"}
+Flows go from base group (left) to COFOG division (right) and count links, not revenue. The five base groups with the most links (pooled, the catch-all services group excluded) have their own colour in every country; the others are grey. Node order is the same in every country. *Unit:* link. *Set:* earmarked, social contributions excluded.
+:::
+
+We show one country per main design group, the one whose number of links is closest to its group median: `r cname(sankey_main$country[1])` for UEMOA (`r sankey_main$n_links[1]` links, median `r sankey_main$group_median_links[1]`), `r cname(sankey_main$country[2])` for CEMAC (`r sankey_main$n_links[2]`, median `r sankey_main$group_median_links[2]`), `r cname(sankey_main$country[3])` for anglophone countries (`r sankey_main$n_links[3]`, median `r sankey_main$group_median_links[3]`) and `r cname(sankey_main$country[4])` for lusophone countries (`r sankey_main$n_links[4]`, median `r sankey_main$group_median_links[4]`). Two choices break ties around the median. `r cname("ZMB")` is preferred to `r cname(tie_zmb$country)` for its lower class placeholder share (`r pct(val(sankey_candidates, "placeholder_share", country == "ZMB"))` against `r pct(tie_zmb$placeholder_share)`), and `r cname("CPV")` to `r cname(tie_cpv$country)` because it adds a non-resource-intensive country to three resource-rich ones. The choice is provisional.
+
+::: {.panel-tabset}
+```{r a2c-tabs, results = "asis"}
+## One tab per main-text country; the line under each figure reads 03_sankey_flows.csv
+for (i in seq_len(nrow(sankey_main))) {
+  iso <- sankey_main$country[i]
+  flows_c <- sankey_flows %>% filter(country == iso)
+  largest <- flows_c %>% slice_max(n_links, n = 1, with_ties = FALSE)
+  tab_name <- cname(iso)
+  tab_name <- paste0(toupper(substring(tab_name, 1, 1)), substring(tab_name, 2))   # "the Republic..." as a tab label
+  cat("\n### ", tab_name, " {.unnumbered}\n\n", sep = "")
+  cat("![](", fig_path(paste0("03_A2c_sankey_", iso)), ")\n\n", sep = "")
+  cat(sum(flows_c$n_links), " links in ", nrow(flows_c), " flows. Largest flow: ",
+      tolower(base_labels[largest$base_group]), " to ", cofog_labels[largest$cofog_division],
+      " (", largest$n_links, " links).\n\n", sep = "")
+}
+```
+:::
+
+```{r a2c-pdf}
+## The 43-page PDF is embedded as a download link, so the link still works once the HTML is sent on its own
+sankey_pdf <- file.path(dir_figures, "03_A2c_sankey_countries.pdf")
+if (!file.exists(sankey_pdf)) stop("Saved figure not found: ", sankey_pdf)
+htmltools::tags$p(
+  htmltools::tags$a(href = xfun::base64_uri(sankey_pdf), download = "03_A2c_sankey_countries.pdf",
+                    "Download the Sankeys of all 43 countries (PDF, one page per country)"),
+  " ordered by design group, then ISO3 code."
+)
+```
+
+
+## A3. Is there an economic rationale?
+
+::: {.callout-note title="How to read this"}
+Each link gets one **benefit link**, tested in this order. *Corrective*: the destination mitigates the harm the base causes. *Compensatory*: it compensates the territory bearing the activity. *Benefit*: it serves the payers themselves. *Sectoral*: it serves the taxed sector as a whole. *General revenue*: a broad base with no specific link. *Unlinked*: a specific base and an unrelated destination.
+
+*Unit:* link (links with no COFOG division excluded). *Set:* earmarked, social contributions excluded. Shares are country-equal.
+:::
+
+```{r a3}
+a3_all <- a3 %>% filter(group == "all countries")
+a3_share <- function(link, grp = "all countries") val(a3, "share_country_equal", group == grp, benefit_link == link)
+n_links_a3 <- sum(a3_all$n_links)
+n_null_a3  <- unique(a3_all$n_null_excluded)
+```
+
+```{r a3-fig, fig.cap = "A3. Benefit link of earmark links, overall and by legal family"}
+include_graphics(fig_path("02_A3_benefit_link"))
+```
+
+Sectoral links are the largest class (`r pct(a3_share("sectoral"))` of `r num(n_links_a3)` links), followed by benefit (`r pct(a3_share("benefit"))`) and unlinked (`r pct(a3_share("unlinked"))`) links. Corrective links are `r pct(a3_share("corrective"))`, general revenue links `r pct(a3_share("general_revenue"))` and compensatory links `r pct(a3_share("compensatory"))`. The unlinked share is `r pct(a3_share("unlinked", "francophone_civil"))` in francophone civil law countries and `r pct(a3_share("unlinked", "anglophone_common"))` in anglophone common law countries. The `r n_null_a3` links with no COFOG division are left out.
+
+```{r a3-table}
+a3_show <- a3 %>%
+  mutate(group_label = paste0(ifelse(group == "all countries", "All countries", family_labels[group]),
+                              " (", countries_in_mean, ")")) %>%
+  select(group_label, benefit_link, share_country_equal) %>%
+  mutate(share_country_equal = pct(share_country_equal),
+         benefit_link = factor(benefit_link, levels = names(benefit_labels))) %>%
+  arrange(benefit_link) %>%
+  mutate(benefit_link = benefit_labels[as.character(benefit_link)]) %>%
+  pivot_wider(names_from = group_label, values_from = share_country_equal)
+
+kable(a3_show, col.names = c("Benefit link", names(a3_show)[-1]), align = "lrrrrrr",
+      caption = "A3. Share of links in each class, country-equal, by legal family (number of countries in brackets)")
+```
+
+The hispanophone group is one country (Equatorial Guinea) and the mixed group two (Rwanda and Ethiopia), so their shares are not group comparisons.
+
+
+## A4. How binding are earmarks?
+
+::: {.callout-note title="How to read this"}
+**Commitment strength.** *Hard*: a fixed share to a dedicated body or account, in a law voted by parliament. *Firm*: a fixed share routed through a ministry or programme, or written only in an annual finance law. *Soft*: a share left to a later decree, unstated or bounded, or an assignment made by decree. An instrument's commitment is its strongest assignment.
+
+*Unit:* instrument (E-class, commitment); allocation, top level, restricted legs, a pool counted once (vehicle, legal rank, determinacy). *Set:* earmarked, social contributions excluded. Shares are country-equal.
+:::
+
+```{r a4}
+a4i <- function(cat, grp = "all countries") val(a4_instrument, "share_country_equal", group == grp, category == cat)
+a4a <- function(meas, cat) val(a4_allocation, "share_country_equal", group == "all countries", measure == meas, category == cat)
+```
+
+```{r a4-fig, fig.cap = "A4. Commitment strength of earmarked instruments, by legal family"}
+include_graphics(fig_path("04_A4_commitment"))
+```
+
+E3 instruments are `r pct(a4i("E3"))` of the earmarked set and E2 instruments `r pct(a4i("E2"))`. The strongest commitment of an instrument is hard for `r pct(a4i("hard"))`, soft for `r pct(a4i("soft"))` and firm for `r pct(a4i("firm"))`. The hard share is `r pct(a4i("hard", "francophone_civil"))` in francophone civil law countries and `r pct(a4i("hard", "anglophone_common"))` in anglophone common law countries.
+
+```{r a4-table}
+a4_show <- a4_allocation %>%
+  filter(group == "all countries") %>%
+  transmute(measure = recode(measure, vehicle_class = "Vehicle", legal_rank = "Legal rank", determinacy = "Determinacy"),
+            category = gsub("_", " ", category), n, n_countries,
+            country_equal = pct(share_country_equal, 1), pooled = pct(share_pooled, 1))
+
+kable(a4_show, col.names = c("Measure", "Category", "Allocations", "Countries", "Country-equal share", "Pooled share"),
+      align = "llrrrr", caption = "A4. Restricted top-level allocations of earmarked instruments: vehicle, legal rank and determinacy (all countries)")
+```
+
+Of restricted top-level allocations, `r pct(a4a("vehicle_class", "fund_or_agency"))` go to a fund-or-agency vehicle, `r pct(a4a("vehicle_class", "on_budget"))` to an on-budget vehicle and `r pct(a4a("vehicle_class", "territorial_external"))` to territorial or external bodies. `r pct(a4a("legal_rank", "ordinary_law"))` sit in an ordinary law, `r pct(a4a("legal_rank", "regulation"))` in a regulation and `r pct(a4a("legal_rank", "finance_law"))` in a finance law; this describes where the clauses sit in the corpus. `r pct(a4a("determinacy", "determinate"))` of allocations state a determinate share and destination.
+
+
+## A6. Sharing with local governments and regional bodies
+
+::: {.callout-note title="How to read this"}
+Each allocation to or through a subnational tier has one **type of sharing**: general tax sharing (a share of a national tax paid into a tier's budget, free to use), specific tax sharing (the use is restricted), devolved earmark, equalisation transfer, derivation transfer, or functional earmark of a tier's body. Sharing allocations are also split into restricted and unrestricted. Administrative retentions (collection costs, payments to local collectors or chiefs) are never sharing: they are counted apart and left out of the types and the figure.
+
+*Unit:* sharing allocation to or through a subnational tier, all share levels, a pool counted once (administrative retentions counted apart). *Set:* assigned (E1 + E2 + E3), social contributions excluded. Counts only.
+:::
+
+```{r a6}
+a6_n_alloc  <- sum(a6_country$n_allocations)
+a6_n_instr  <- sum(a6_country$n_instruments)
+a6_with     <- a6_country %>% filter(n_allocations > 0)
+a6_none     <- a6_country %>% filter(n_allocations == 0)
+if (a6_n_alloc != sum(a6_incidence$n_allocations)) stop("A6: by-country and incidence totals differ")
+## Sharing allocations only (05_territorial.R, decision of 2 Nov 2026); retentions are one separate count
+if (sum(a6_country$n_restricted + a6_country$n_unrestricted) != a6_n_alloc) stop("A6: restricted + unrestricted do not sum to the sharing allocations")
+a6_n_ret <- sum(a6_country$n_retention)
+if (!all(grepl(paste0("excludes ", a6_n_ret, " "), a6_incidence$note))) stop("A6: the incidence note does not match the retentions of the by-country table")
+a6_type <- function(type, column) val(a6_incidence, column, assignment_type == type)
+retention_max <- a6_country %>% slice_max(n_retention, n = 1)
+```
+
+```{r a6-fig, fig.cap = "A6. Subnational sharing allocations by type of sharing, by country"}
+include_graphics(fig_path("05_A6_subnational"))
+```
+
+The law assigns `r num(a6_n_alloc)` sharing allocations of `r num(a6_n_instr)` instruments to or through subnational tiers, in `r nrow(a6_with)` countries; `r and_list(cname(a6_none$country))` have none. Of these allocations, `r num(sum(a6_country$n_unrestricted))` are unrestricted and `r sum(a6_country$n_restricted)` restricted; `r sum(a6_country$n_below_top)` sit below the top level. General tax sharing is the most common type (`r a6_type("tax_sharing_general", "n_allocations")` allocations in `r a6_type("tax_sharing_general", "n_countries")` countries), followed by derivation transfers (`r a6_type("derivation_transfer", "n_allocations")` in `r a6_type("derivation_transfer", "n_countries")`).
+
+We report administrative retentions separately, because they are never sharing. The law assigns `r a6_n_ret` of them at the subnational level (`r retention_max$n_retention` in `r cname(retention_max$country)`): collection costs and payments to local collectors or chiefs. They are not in the figure or in the table of types.
+
+These counts reflect the type of decentralisation, not its degree. Tax sharing written into tax codes appears as allocations, whereas grants set each year do not, and annual revenue-division Acts were excluded from the corpus.
+
+```{r a6-table}
+a6_show <- a6_incidence %>%
+  transmute(type = sharing_labels[assignment_type], n_allocations, n_countries) %>%
+  arrange(desc(n_allocations))
+if (any(is.na(a6_show$type))) stop("A6: assignment_type without a label")
+
+kable(a6_show, col.names = c("Type of sharing", "Allocations", "Countries"), align = "lrr",
+      caption = "A6. Subnational sharing allocations by type of sharing (administrative retentions excluded)")
+```
+
+**Regional bodies.** `r a6_regional$n_allocations` allocations in `r a6_regional$n_countries` countries go to a supranational body. They are recorded only where a national text restates the levy, because community acts were not collected.
+
+
+## A7. Do legal traditions shape the design?
+
+::: {.callout-note title="How to read this"}
+**Design groups**: UEMOA francophone, CEMAC francophone, francophone outside the CFA zone, anglophone, lusophone outside the CFA zone. Guinea-Bissau and Equatorial Guinea (CFA, not francophone) and Rwanda and Ethiopia (mixed) are labelled points, never groups. UEMOA and CEMAC against non-CFA francophone countries is the harmonisation contrast; anglophone against non-CFA francophone countries is the legal-tradition contrast.
+
+*Unit:* allocation (a); country (b). *Set:* earmarked, social contributions excluded. Group comparisons are associations, not effects.
+:::
+
+### A7(a). Recipient forms by design group
+
+```{r a7a}
+a7a_main <- a7a %>% filter(level == "design_group", group %in% design_main)
+a7a_share <- function(grp, form) val(a7a_main, "share_country_equal", group == grp, recipient_form == form)
+## Check of the text: agencies and funds are the two largest forms in each of the five main groups
+a7a_top2 <- a7a_main %>% group_by(group) %>% slice_max(share_country_equal, n = 2) %>% ungroup()
+if (!all(a7a_top2$recipient_form %in% c("agency", "fund")) || nrow(a7a_top2) != 10) stop("A7(a): agency and fund are not the top two everywhere")
+a7a_af <- a7a_main %>% filter(recipient_form %in% c("agency", "fund")) %>%
+  group_by(group) %>% summarise(share = sum(share_country_equal), .groups = "drop")
+a7a_af_franco <- a7a_af %>% filter(group %in% c("uemoa_francophone", "cemac_francophone", "francophone_noncfa"))
+```
+
+```{r a7a-fig, fig.cap = "A7(a). Recipient forms of restricted top-level allocations, by design group"}
+include_graphics(fig_path("04_A7a_recipient_form"))
+```
+
+Agencies and funds are the two largest recipient forms in each of the five main groups. Together they take `r pct(val(a7a_af, "share", group == "anglophone_common"))` of restricted top-level allocations in anglophone countries, against `r pct(min(a7a_af_franco$share))` to `r pct(max(a7a_af_franco$share))` in the three francophone groups. Special accounts take `r pct(a7a_share("uemoa_francophone", "special_account"))` in UEMOA, `r pct(a7a_share("cemac_francophone", "special_account"))` in CEMAC and `r pct(a7a_share("francophone_noncfa", "special_account"))` in non-CFA francophone countries, against `r pct(a7a_share("anglophone_common", "special_account"))` in anglophone countries. These are legal forms as written, not budget status.
+
+### A7(b). Design profile
+
+```{r a7b}
+a7b_med <- function(meas, grp) val(a7b_groups, "median", measure == meas, design_group == grp)
+a7b_main <- a7b_groups %>% filter(design_group %in% design_main)
+hard_other <- a7b_main %>% filter(measure == "hard_commitment_share", design_group != "anglophone_common")
+benefit_main <- a7b_main %>% filter(measure == "benefit_linked_share")
+e3_main <- a7b_main %>% filter(measure == "E3_share")
+e3_low  <- e3_main %>% slice_min(median, n = 1)
+e3_high <- e3_main %>% slice_max(median, n = 1)
+```
+
+```{r a7b-fig, fig.cap = "A7(b). Design profile: country shares and group medians"}
+include_graphics(fig_path("04_A7b_profile"))
+```
+
+Group medians of the E3 share run from `r pct(e3_low$median)` in `r design_prose[e3_low$design_group]` to `r pct(e3_high$median)` in `r design_prose[e3_high$design_group]`. The median hard-commitment share is `r pct(a7b_med("hard_commitment_share", "anglophone_common"))` in anglophone countries and between `r pct(min(hard_other$median))` and `r pct(max(hard_other$median))` in the other four groups. Benefit-linked medians are closer, from `r pct(min(benefit_main$median))` to `r pct(max(benefit_main$median))`. Ranges within groups are wide: the hard-commitment share of anglophone countries runs from `r pct(val(a7b_groups, "min", measure == "hard_commitment_share", design_group == "anglophone_common"))` to `r pct(val(a7b_groups, "max", measure == "hard_commitment_share", design_group == "anglophone_common"))`.
+
+```{r a7b-table}
+a7b_show <- a7b_main %>%
+  mutate(cell = paste0(pct(median), " [", round(100 * min), ", ", round(100 * max), "]"),
+         group_label = paste0(design_labels[design_group], " (", n_countries, ")"),
+         measure = measure_labels[measure]) %>%
+  select(measure, group_label, cell) %>%
+  pivot_wider(names_from = group_label, values_from = cell)
+
+kable(a7b_show, col.names = c("Measure", names(a7b_show)[-1]), align = "lrrrrr",
+      caption = "A7(b). Group median [min, max] of country shares, five main design groups (number of countries in brackets)")
+```
+
+Appendix Table A7(b) gives the country values and the median law year of each country.
+
+
+# Robustness: social contributions and class placeholders
+
+::: {.callout-note title="How to read this"}
+**Social contributions** (pension and health-insurance contributions) are left out of the headline results; the second column adds them back. **Class placeholders** stand for classes of charges the law names without listing them; the third column drops them.
+
+*Unit:* stated in each row. *Set:* headline = earmarked (assigned for A6), social contributions excluded. Shares are country-equal. Values are read from the saved `_sc` and `_nopl` tables.
+:::
+
+```{r robustness}
+## The same measures, read from the three sets of saved tables
+sets <- c(headline = "", sc = "_sc", nopl = "_nopl")
+robust <- list()
+for (s in names(sets)) {
+  suffix <- sets[[s]]
+  t_a1   <- read_table(paste0("02_A1_by_country", suffix))
+  t_a2a  <- read_table(paste0("02_A2a_links", suffix))
+  t_a2b  <- read_table(paste0("02_A2b_recipient_form", suffix))
+  t_a3   <- read_table(paste0("02_A3_benefit_link", suffix)) %>% filter(group == "all countries")
+  t_a4   <- read_table(paste0("04_A4_instrument", suffix)) %>% filter(group == "all countries")
+  t_prof <- read_table(paste0("04_A7b_profile", suffix))
+  t_a6   <- read_table(paste0("05_A6_subnational_by_country", suffix))
+
+  ## Same columns as the headline tables, and the same 43 countries
+  if (nrow(t_a1) != 43 || nrow(t_prof) != 43 || nrow(t_a6) != 43) stop("Robustness: not 43 countries in set ", s)
+  ## The instrument-level shares of the profile are the country-equal means of A4 (same measure, two tables)
+  if (abs(mean(t_prof$E3_share) - val(t_a4, "share_country_equal", category == "E3")) > 1e-9) stop("Robustness: E3 share differs between A4 and A7(b) in set ", s)
+  if (abs(mean(t_prof$hard_commitment_share) - val(t_a4, "share_country_equal", category == "hard")) > 1e-9) stop("Robustness: hard share differs between A4 and A7(b) in set ", s)
+
+  robust[[s]] <- tibble(
+    measure = c("Earmarked instruments", "Restricted top-level allocations",
+                "E3 (exclusive) share", "Hard-commitment share", "Fund-or-agency share", "Benefit-linked share",
+                "704 Economic affairs, share of links",
+                "A2b recipient forms: agency", "A2b recipient forms: fund",
+                "A3 sectoral", "A3 unlinked", "A3 general revenue",
+                "A6 sharing allocations", "A6 countries with any sharing"),
+    unit = c("instrument", "allocation",
+             "instrument", "instrument", "instrument", "link",
+             "link",
+             "allocation", "allocation",
+             "link", "link", "link",
+             "allocation (assigned set, retentions excluded)", "country"),
+    kind = c("count", "count", rep("share", 10), "count", "count"),
+    prose = c("", "", "E3 share", "hard-commitment share", "fund-or-agency share", "benefit-linked share",
+              "704 share of links", "agency share of allocations", "fund share of allocations",
+              "sectoral share of links", "unlinked share of links", "general revenue share of links", "", ""),
+    value = c(sum(t_a1$n_earmarked), sum(t_a1$n_alloc_top_restricted),
+              val(t_a4, "share_country_equal", category == "E3"),
+              val(t_a4, "share_country_equal", category == "hard"),
+              mean(t_prof$fund_agency_share),       # Table A1 measure: share of earmarked instruments
+              mean(t_prof$benefit_linked_share),
+              sum(t_a2a$share_country_equal[t_a2a$cofog_division == "704"]),
+              val(t_a2b, "share_country_equal", recipient_form == "agency"),
+              val(t_a2b, "share_country_equal", recipient_form == "fund"),
+              val(t_a3, "share_country_equal", benefit_link == "sectoral"),
+              val(t_a3, "share_country_equal", benefit_link == "unlinked"),
+              val(t_a3, "share_country_equal", benefit_link == "general_revenue"),
+              sum(t_a6$n_allocations), sum(t_a6$n_allocations > 0)),
+    set = s)
+}
+robust <- bind_rows(robust) %>% pivot_wider(names_from = set, values_from = value)
+
+## Largest change of a share against the headline set, in percentage points
+robust_gap <- robust %>%
+  filter(kind == "share") %>%
+  pivot_longer(c(sc, nopl), names_to = "alt", values_to = "alt_value") %>%
+  mutate(gap = abs(alt_value - headline)) %>%
+  slice_max(gap, n = 1, with_ties = FALSE)
+alt_labels <- c(sc = "with social contributions", nopl = "without class placeholders")
+
+robust_show <- robust %>%
+  mutate(across(c(headline, sc, nopl), ~ ifelse(kind == "share", pct(.x), num(.x)))) %>%
+  select(measure, unit, headline, sc, nopl)
+
+kable(robust_show, col.names = c("Measure", "Unit", "Headline", "Social contributions included", "Class placeholders excluded"),
+      align = "llrrr", caption = "Robustness. Main values in the headline set and the two alternative sets (shares country-equal)")
+```
+
+Adding social contributions or dropping class placeholders changes no share in the table by more than `r round(100 * robust_gap$gap)` percentage points. The largest change is in the `r robust_gap$prose`, from `r pct(robust_gap$headline)` to `r pct(robust_gap$alt_value)` `r alt_labels[robust_gap$alt]`. The counts change more: the earmarked set holds `r num(val(robust, "sc", measure == "Earmarked instruments"))` instruments with social contributions and `r num(val(robust, "nopl", measure == "Earmarked instruments"))` without class placeholders, against `r num(val(robust, "headline", measure == "Earmarked instruments"))` in the headline set. Pooled shares, the other robustness check, are given next to the country-equal shares in each saved table.
+
+
+# Open issues
+
+*Pending items copied from `docs/PROJECT_STATE.md` (2 November 2026); none of them is decided.*
+
+- **Budget status of fund rows.** `budget_status` (on-budget / off-budget / unknown) is to be built before B2, from autonomy or legal-personality wording, a match against the finance-law special-account tables, and a hand check. Until then, "fund" is a legal form, not budget status.
+- **Missing social contributions.** Verify whether the missing social contributions in Comoros, Guinea, Madagascar and Niger are corpus gaps.
+- **Main-text Sankeys.** The four countries of A2c are provisional; the tie-breaks are in the `note` column of `03_sankey_candidates.csv`.
+
+
+# Appendix {.unnumbered}
+
+## Table A1. One row per country {.unnumbered}
+
+```{r appendix-a1}
+table_a1_show <- table_a1 %>%
+  mutate(across(c(placeholder_share, exclusive_share, fund_agency_share, benefit_linked_share, hard_commitment_share), ~ pct(.x)))
+
+htmltools::div(class = "wide-table",
+  htmltools::HTML(kable(table_a1_show, format = "html", table.attr = 'class="table table-sm table-striped"',
+                        caption = "Table A1. Countries: groups, documents, law years, counts and design shares")))
+```
+
+```{r appendix-a1-columns}
+kable(table_a1_columns, col.names = c("Column", "Unit", "Definition"), caption = "Table A1: definition of each column")
+```
+
+## A6 by country {.unnumbered}
+
+```{r appendix-a6}
+a6_country_show <- a6_country %>% select(-set, -unit)
+htmltools::div(class = "wide-table",
+  htmltools::HTML(kable(a6_country_show, format = "html", table.attr = 'class="table table-sm table-striped"',
+                        caption = "A6. Subnational sharing allocations by country (assigned set, social contributions excluded; all share levels, a pool counted once; administrative retentions excluded from n_allocations and the type columns, counted in n_retention)")))
+```
+
+## Table A7(b). Country design profile {.unnumbered}
+
+```{r appendix-a7b}
+a7b_profile_show <- a7b_profile %>%
+  transmute(country, design_group = design_labels[design_group], resource_group, documents_read, n_earmarked,
+            n_benefit_pairs, E3_share = pct(E3_share), hard_commitment_share = pct(hard_commitment_share),
+            benefit_linked_share = pct(benefit_linked_share), fund_agency_share = pct(fund_agency_share),
+            law_year_median)
+htmltools::div(class = "wide-table",
+  htmltools::HTML(kable(a7b_profile_show, format = "html", table.attr = 'class="table table-sm table-striped"',
+                        caption = "A7(b). Country values of the four design shares, with the median law year as context (unit: country)")))
+```

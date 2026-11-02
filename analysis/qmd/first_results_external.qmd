@@ -1,0 +1,595 @@
+---
+title: "First results with external data"
+subtitle: "De jure revenue earmarking in 43 Sub-Saharan African countries, tax revenue and PEFA. Preliminary, before validation."
+format:
+  html:
+    embed-resources: true
+    toc: true
+    toc-depth: 2
+    toc-location: left
+    number-sections: true
+    theme: cosmo
+    fig-align: center
+    include-in-header:
+      text: |
+        <style>
+          h1, h2, h3 { color: #0A2B4F; }
+          a { color: #245C9E; }
+          .table { font-size: 0.85rem; }
+          .wide-table { overflow-x: auto; }
+          .rho-table td { vertical-align: middle; }
+        </style>
+execute:
+  echo: false
+  warning: false
+  message: false
+knitr:
+  opts_chunk:
+    out.width: "100%"
+---
+
+```{r setup}
+## ============================================================================
+## first_results_external.qmd: second preliminary report, section B (ANALYSIS_SPEC §3 and §6)
+## Assembles the outputs of 11_tax_revenue.R (B1) and 12_pefa.R (B2) with comments. Reads the saved tables and
+## figures of analysis/output/{run_date}/ only and computes nothing new: the only arithmetic is minima, maxima,
+## medians, counts and differences of saved values. Definitions in the boxes come from docs/GLOSSARY.md.
+## Render (Quarto bundled with RStudio):
+##   quarto render analysis/qmd/first_results_external.qmd --output-dir ../output/2026-11-02
+## ============================================================================
+
+source(here::here("analysis", "paths.R"))           # dir_tables, dir_figures, run_date
+source(here::here("analysis", "theme_earmark.R"))   # pal_ord and col_grey_dark for the shaded tables
+
+library(dplyr)
+library(tidyr)
+library(knitr)
+
+
+## --- Helpers: read a saved output, pick one value, format (as in first_results_database.qmd) ---
+read_table <- function(name, ...) {
+  f <- file.path(dir_tables, paste0(name, ".csv"))
+  if (!file.exists(f)) stop("Saved table not found: ", f)
+  read.csv(f, ...)
+}
+
+## Figures are referenced by a path relative to this qmd, so that embed-resources finds them
+fig_path <- function(name, ext = "png") {
+  f <- file.path(dir_figures, paste0(name, ".", ext))
+  if (!file.exists(f)) stop("Saved figure not found: ", f)
+  xfun::relative_path(f, dir = getwd(), use.. = TRUE)
+}
+
+## One value from a saved table: stop() unless the filter selects exactly one row
+val <- function(df, column, ...) {
+  x <- df %>% filter(...) %>% pull(all_of(column))
+  if (length(x) != 1) stop("val(): ", length(x), " rows selected for ", column)
+  x
+}
+
+pct  <- function(x, digits = 0) paste0(formatC(100 * x, format = "f", digits = digits), "%")
+## A rho, two decimals; a value that rounds to zero is shown as 0.00, not -0.00
+r2 <- function(x) {
+  x <- round(x, 2)
+  x[x == 0] <- 0
+  formatC(x, format = "f", digits = 2)
+}
+
+## "a, b and c"
+and_list <- function(x) {
+  if (length(x) <= 1) return(x)
+  paste(paste(x[-length(x)], collapse = ", "), "and", x[length(x)])
+}
+
+## Table cell for one rho: the value and its leave-one-out range, on a background shaded by |rho| (white at 0,
+## the lightest blue of pal_ord at 0.5 or more). Magnitude only: the sign is in the number.
+rho_cell <- function(rho, lo, hi) {
+  w  <- pmin(abs(rho) / 0.5, 1)
+  bg <- grDevices::rgb(grDevices::colorRamp(c("#FFFFFF", pal_ord[1]))(w), maxColorValue = 255)
+  paste0('<div style="background:', bg, '; padding: 3px 6px;">', r2(rho),
+         '<br><span style="font-size: 0.75em; color: ', col_grey_dark, ';">[', r2(lo), ', ', r2(hi), ']</span></div>')
+}
+
+
+## --- Labels: country names for the text (tables keep ISO3) ---
+country_names <- c(AGO = "Angola", BDI = "Burundi", BEN = "Benin", BFA = "Burkina Faso", BWA = "Botswana",
+                   CAF = "the Central African Republic", CIV = "Côte d'Ivoire", CMR = "Cameroon",
+                   COD = "the Democratic Republic of the Congo", COG = "the Republic of the Congo",
+                   COM = "Comoros", CPV = "Cabo Verde", ETH = "Ethiopia", GAB = "Gabon", GHA = "Ghana",
+                   GIN = "Guinea", GMB = "The Gambia", GNB = "Guinea-Bissau", GNQ = "Equatorial Guinea",
+                   KEN = "Kenya", LBR = "Liberia", LSO = "Lesotho", MDG = "Madagascar", MLI = "Mali",
+                   MOZ = "Mozambique", MUS = "Mauritius", MWI = "Malawi", NAM = "Namibia", NER = "Niger",
+                   NGA = "Nigeria", RWA = "Rwanda", SEN = "Senegal", SLE = "Sierra Leone",
+                   STP = "São Tomé and Príncipe", SWZ = "Eswatini", SYC = "Seychelles", TCD = "Chad",
+                   TGO = "Togo", TZA = "Tanzania", UGA = "Uganda", ZAF = "South Africa", ZMB = "Zambia",
+                   ZWE = "Zimbabwe")
+cname <- function(iso3) {
+  if (any(!iso3 %in% names(country_names))) stop("No name for: ", paste(setdiff(iso3, names(country_names)), collapse = ", "))
+  unname(country_names[iso3])
+}
+share_order <- c("exclusive_share", "hard_commitment_share", "fund_agency_share", "benefit_linked_share")
+share_short <- c(exclusive_share = "Exclusive (E3)", hard_commitment_share = "Hard commitment",
+                 fund_agency_share = "Fund or agency", benefit_linked_share = "Benefit-linked")
+share_prose <- c(exclusive_share = "exclusive share", hard_commitment_share = "hard-commitment share",
+                 fund_agency_share = "fund-or-agency share", benefit_linked_share = "benefit-linked share")
+resource_labels <- c(oil_exporter = "Oil exporter", other_resource_intensive = "Other resource-intensive",
+                     non_resource_intensive = "Non-resource-intensive")
+design_prose <- c(uemoa_francophone = "UEMOA countries", cemac_francophone = "CEMAC countries",
+                  francophone_noncfa = "non-CFA francophone countries", anglophone_common = "anglophone countries",
+                  lusophone_noncfa = "lusophone countries")
+
+
+## --- Saved tables ---
+b1           <- read_table("11_B1_tax_revenue")
+b1_country   <- read_table("11_B1_country_data")
+b2           <- read_table("12_B2_pefa")
+b2_countries <- read_table("12_B2_pefa_countries")
+sources      <- read_table("10_external_sources")
+table_a1     <- read_table("01_tableA1")
+a7b_groups   <- read_table("04_A7b_group_summary")
+
+## Checks: 43 countries in B1, the PEFA n of 10_external_sources.csv, every rho in [-1, 1]
+if (nrow(b1_country) != 43 || n_distinct(b1_country$country) != 43) stop("B1: expected 43 countries")
+b1_versions <- table(b1$version)
+b2_versions <- table(b2$version)
+if (!identical(as.vector(b1_versions[c("all", "no_oil", "latest_year", "no_sacu", "within_family", "counts", "no_sacu_all")]),
+               c(40L, 40L, 40L, 4L, 40L, 1L, 40L))) stop("B1: unexpected number of rows by version")
+if (!identical(as.vector(b2_versions[c("latest", "from_2018", "within_family")]), c(6L, 6L, 12L))) {
+  stop("B2: unexpected number of rows by version")
+}
+if (any(abs(c(b1$rho, b1$loo_min, b1$loo_max, b2$rho, b2$loo_min, b2$loo_max)) > 1)) stop("A rho outside [-1, 1]")
+for (p in c("pi6", "pi6_2", "pi6_3")) {
+  n_sources <- val(sources, "n_countries", variable == paste0(p, "_ord"))
+  if (any(b2$n[b2$version == "latest" & b2$score == p] != n_sources)) stop("B2: n of ", p, " differs from 10_external_sources.csv")
+}
+if (nrow(b2_countries) != val(sources, "n_countries", variable == "pefa_year")) stop("B2: countries differ from the sources table")
+## The shares behind B1 and B2 are those of Table A1
+check_a1 <- b1_country %>% inner_join(table_a1, by = "country", suffix = c("", "_a1"))
+if (nrow(check_a1) != 43 || any(abs(check_a1$fund_agency_share - check_a1$fund_agency_share_a1) > 1e-9 |
+                                abs(check_a1$exclusive_share - check_a1$exclusive_share_a1) > 1e-9)) {
+  stop("B1 country data differ from 01_tableA1.csv")
+}
+```
+
+::: {.callout-warning title="Status of these results"}
+```{r status}
+n_b1     <- nrow(b1_country)
+n_pefa   <- nrow(b2_countries)
+pefa_min <- min(b2_countries$pefa_year)
+pefa_max <- max(b2_countries$pefa_year)
+```
+
+- **Preliminary.** These results come before the validation of ANALYSIS_SPEC §4 (recall, precision and κ, stability, corpus completeness), which must come before any institutional result is written up.
+- **Scope.** Two questions only: B1, earmarking design and tax revenue (`r n_b1` countries), and B2, earmarking and budget comprehensiveness (`r n_pefa` countries with a PEFA under the 2016 framework). B3 (resource revenue and compensatory design) is deferred: a continuous resource-revenue share exists for too few countries.
+- **WGI.** Governance indicators enter only the validation, because better-governed countries may publish their law more completely.
+- **Interim measure in B2.** The fund-or-agency share is a legal form as written, not budget status. It will be replaced by an off-budget share once `budget_status` is built for fund rows.
+- **Reading.** Every statistic is a rank correlation across countries: an association, not an effect.
+- **Pass.** Tables and figures of the pass of `r run_date`, read from `analysis/output/`; nothing is recomputed here.
+:::
+
+
+# B1. Earmarking and tax revenue
+
+::: {.callout-note title="How to read this"}
+**Tax revenue (% of GDP)** comes from the IMF World Revenue Longitudinal Database (WoRLD), mean of 2022–2024 for each country. The four **earmarking measures** are the shares of Table A1: the exclusive (E3), hard-commitment and fund-or-agency shares of a country's earmarked instruments, and the benefit-linked share of its instrument × COFOG division links. They are shares, never counts, because counts depend on the corpus.
+
+**Spearman ρ** is a rank correlation between −1 and 1. It uses only the ordering of countries, so it is not driven by one extreme value. With about 30 to 43 countries, a ρ below about 0.3 in absolute value is hard to tell from zero. The **leave-one-out range** recomputes ρ once without each country; a wide range means a few countries drive the result.
+
+*Unit:* country, unweighted. *Set:* earmarked instruments (E2 + E3), social contributions excluded.
+:::
+
+```{r b1}
+b1_taxrev <- b1 %>% filter(version == "all", revenue_measure == "TaxRev")
+b1_taxrev_nooil <- b1 %>% filter(version == "no_oil", revenue_measure == "TaxRev")
+rho_taxrev <- function(s) val(b1_taxrev, "rho", share == s)
+n_oil <- sum(b1_country$resource_group == "oil_exporter")
+```
+
+```{r b1-fig, fig.cap = "B1. Total tax revenue and the four design shares, by country"}
+include_graphics(fig_path("11_B1_tax_revenue"))
+```
+
+Across the `r n_b1` countries, total tax revenue has a rank correlation of `r r2(rho_taxrev("exclusive_share"))` with the exclusive share, `r r2(rho_taxrev("hard_commitment_share"))` with the hard-commitment share, `r r2(rho_taxrev("fund_agency_share"))` with the fund-or-agency share and `r r2(rho_taxrev("benefit_linked_share"))` with the benefit-linked share. Dropping one country at a time moves none of these four correlations by more than `r r2(max(b1_taxrev$loo_max - b1_taxrev$rho, b1_taxrev$rho - b1_taxrev$loo_min))`. Without the `r n_oil` oil exporters, the same four correlations run from `r r2(min(b1_taxrev_nooil$rho))` to `r r2(max(b1_taxrev_nooil$rho))`.
+
+```{r b1-sacu}
+## Follow-up checked after seeing Figure B1 (2 Nov 2026): the main grid without the 5 SACU members
+sacu_iso3 <- b1_country$country[b1_country$sacu]
+if (length(sacu_iso3) != 5) stop("B1: expected 5 SACU members in the country data")
+
+## The seven countries with the highest tax ratios in the figure, and their lowest exclusive share
+top7 <- b1_country %>% slice_max(TaxRev_avg, n = 7)
+if (!setequal(top7$country, c(sacu_iso3, "MUS", "SYC"))) stop("B1: the seven highest tax ratios are not the SACU members, MUS and SYC")
+
+b1_all_main <- b1 %>% filter(version == "all", tier == "main")
+b1_nosacu   <- b1 %>% filter(version == "no_sacu_all", is.na(legal_family))
+rho_excl_all    <- val(b1_all_main, "rho", revenue_measure == "TaxRev", share == "exclusive_share")
+rho_excl_nosacu <- val(b1_nosacu, "rho", revenue_measure == "TaxRev", share == "exclusive_share")
+n_nosacu <- unique(b1_nosacu$n)
+if (length(n_nosacu) != 1) stop("B1: n varies across the rows without SACU")
+sacu_change <- b1_nosacu %>%
+  inner_join(b1_all_main %>% select(revenue_measure, share, rho_all = rho), by = c("revenue_measure", "share")) %>%
+  mutate(change = rho - rho_all)
+if (nrow(sacu_change) != 20) stop("B1: expected 20 main correlations without SACU")
+
+## SACU members in WoRLD (mean 2022-2024, % of GDP): trade taxes and other non-tax revenue
+sacu_rev <- function(iso, v) val(b1_country, v, country == iso)
+tra_bns  <- sapply(c("BWA", "NAM", "SWZ"), sacu_rev, v = "TaxTra_avg")
+
+## Table: the main grid in two samples, side by side (rows = revenue measure × sample, columns = shares)
+b1_compare <- function(sets, caption) {
+  out <- bind_rows(lapply(names(sets), function(nm) sets[[nm]] %>% mutate(sample = paste0(nm, " (", n, ")")))) %>%
+    mutate(cell = rho_cell(rho, loo_min, loo_max),
+           revenue_label = factor(revenue_label, levels = unique(revenue_label)),
+           sample = factor(sample, levels = unique(sample)),
+           share = factor(share, levels = share_order)) %>%
+    arrange(revenue_label, sample, share) %>%
+    select(revenue_label, sample, share, cell) %>%
+    pivot_wider(names_from = share, values_from = cell) %>%
+    mutate(across(c(revenue_label, sample), as.character))
+  htmltools::div(class = "wide-table rho-table",
+    htmltools::HTML(kable(out, format = "html", escape = FALSE, table.attr = 'class="table table-sm"',
+                          col.names = c("Revenue (% of GDP)", "Countries (n)", share_short[share_order]),
+                          align = "llcccc", caption = caption)))
+}
+```
+
+Checked after seeing the figure: the seven countries with the highest tax ratios in Figure B1 are the five SACU members, Mauritius and Seychelles, and all seven have exclusive shares of `r pct(min(top7$exclusive_share))` or more. In the figure, they drive the exclusive-share pattern. Without the SACU members the correlation falls from `r r2(rho_excl_all)` to `r r2(rho_excl_nosacu)` (`r n_nosacu` countries); Mauritius and Seychelles stay in this check. The tax ratios of Botswana, Namibia and Eswatini likely include SACU pool receipts: their trade taxes are `r round(min(tra_bns))` to `r round(max(tra_bns))`% of GDP in WoRLD. Lesotho records trade taxes of `r round(sacu_rev("LSO", "TaxTra_avg"))`% but other non-tax revenue of `r round(sacu_rev("LSO", "NonTaxOth_avg"))`% of GDP, where its receipts probably sit, and South Africa's trade taxes are `r round(sacu_rev("ZAF", "TaxTra_avg"))`%. We have not verified how WoRLD records these receipts.
+
+Across the 20 main correlations, dropping the SACU members changes ρ by `r r2(min(sacu_change$change))` to `r r2(max(sacu_change$change))`. Table B1s gives each one next to its full-sample value.
+
+```{r b1-sacu-table}
+b1_compare(list(`All countries` = b1_all_main, `Without SACU` = b1_nosacu),
+           paste("Table B1s. Spearman ρ [leave-one-out range], all countries and without the 5 SACU members",
+                 "(BWA, LSO, NAM, SWZ, ZAF), mean 2022–2024. Checked after seeing Figure B1, not pre-specified.",
+                 "Unit: country. Shading: |ρ|, darkest at 0.5 or more."))
+```
+
+```{r b1-counts-fig, fig.cap = "B1. Number of earmarked instruments and total tax revenue (context only)"}
+b1_counts <- b1 %>% filter(version == "counts")
+include_graphics(fig_path("11_B1_counts"))
+```
+
+The number of earmarked instruments has a rank correlation of `r r2(b1_counts$rho)` with total tax revenue across the `r b1_counts$n` countries. Counts depend on corpus completeness and on how each legal system splits charges, so this figure is context, not a measure of earmarking intensity.
+
+```{r b1-text}
+b1_main <- b1 %>% filter(version == "all", tier == "main")
+n_main_strong <- sum(abs(b1_main$rho) >= 0.3)
+
+## Change of each rho against the main version (same measure and share)
+b1_change <- b1 %>%
+  filter(version %in% c("no_oil", "latest_year")) %>%
+  inner_join(b1 %>% filter(version == "all") %>% select(revenue_measure, share, rho_all = rho),
+             by = c("revenue_measure", "share")) %>%
+  group_by(version) %>%
+  summarise(max_change = max(abs(rho - rho_all)), .groups = "drop")
+
+b1_tra      <- b1 %>% filter(version == "all", revenue_measure == "TaxTra")
+b1_tra_sacu <- b1 %>% filter(version == "no_sacu")
+```
+
+Table B1 gives ρ for every revenue measure and share, with its leave-one-out range. In the main version, the `r nrow(b1_main)` correlations of the main revenue measures run from `r r2(min(b1_main$rho))` to `r r2(max(b1_main$rho))`, and `r n_main_strong` of them reach 0.3 in absolute value. With 20 or more correlations, one or two can look strong by chance, so we do not single any out. Dropping the oil exporters changes no ρ by more than `r r2(val(b1_change, "max_change", version == "no_oil"))`, and using the latest year changes none by more than `r r2(val(b1_change, "max_change", version == "latest_year"))`.
+
+Without the five SACU members (`r and_list(cname(sacu_iso3))`), the trade-tax correlations run from `r r2(min(b1_tra_sacu$rho))` to `r r2(max(b1_tra_sacu$rho))`, against `r r2(min(b1_tra$rho))` to `r r2(max(b1_tra$rho))` with them. This trade-tax version was decided before the results; how WoRLD records the SACU receipts is discussed above.
+
+```{r b1-table-fun}
+## One shaded table per version: rows = revenue measures in the order of 11_tax_revenue.R, columns = the shares
+b1_table <- function(v, caption, fam = NULL) {
+  rows <- b1 %>% filter(version == v)
+  if (!is.null(fam)) rows <- rows %>% filter(legal_family == fam)
+  if (v == "all") {
+    ## Trade taxes without SACU, as an extra row under the main version
+    rows <- bind_rows(rows, b1 %>% filter(version == "no_sacu") %>%
+                        mutate(tier = "robustness", revenue_label = "Taxes on international trade, without the 5 SACU members"))
+  }
+  out <- rows %>%
+    mutate(cell = rho_cell(rho, loo_min, loo_max),
+           tier = factor(tier, levels = c("main", "secondary", "robustness")),
+           revenue_label = factor(revenue_label, levels = unique(revenue_label)),
+           share = factor(share, levels = share_order)) %>%
+    arrange(tier, revenue_label, share) %>%
+    select(tier, revenue_label, n, share, cell) %>%
+    pivot_wider(names_from = share, values_from = cell) %>%
+    mutate(tier = as.character(tier), revenue_label = as.character(revenue_label))
+  htmltools::div(class = "wide-table rho-table",
+    htmltools::HTML(kable(out, format = "html", escape = FALSE, table.attr = 'class="table table-sm"',
+                          col.names = c("Tier", "Revenue (% of GDP)", "n", share_short[share_order]),
+                          align = "llrcccc", caption = caption)))
+}
+```
+
+::: {.panel-tabset}
+
+## All countries, mean 2022–2024
+
+```{r b1-table-all}
+b1_table("all", paste("Table B1. Spearman ρ [leave-one-out range] between each revenue measure and each design share.",
+                      "Unit: country. Shading: |ρ|, darkest at 0.5 or more. Total revenue includes grants and social contributions.",
+                      "The SACU row: WoRLD treatment of SACU pool receipts not verified."))
+```
+
+## Without oil exporters
+
+```{r b1-table-nooil}
+b1_table("no_oil", paste0("Table B1, without the ", n_oil, " oil exporters (", and_list(b1_country$country[b1_country$resource_group == "oil_exporter"]),
+                          "). Spearman ρ [leave-one-out range]. Shading: |ρ|, darkest at 0.5 or more."))
+```
+
+## Latest year
+
+```{r b1-table-latest}
+b1_table("latest_year", paste("Table B1, latest observed year (2024, or 2023 where 2024 is not yet published).",
+                              "Spearman ρ [leave-one-out range]. Shading: |ρ|, darkest at 0.5 or more."))
+```
+
+:::
+
+The figures below repeat the four panels for each main revenue type.
+
+::: {.panel-tabset}
+
+## Income, profits and capital gains
+
+```{r b1-fig-taxinc}
+include_graphics(fig_path("11_B1_TaxInc"))
+```
+
+## Goods and services
+
+```{r b1-fig-taxsal}
+include_graphics(fig_path("11_B1_TaxSal"))
+```
+
+## International trade
+
+```{r b1-fig-taxtra}
+include_graphics(fig_path("11_B1_TaxTra"))
+```
+
+## Other non-tax revenue
+
+```{r b1-fig-nontaxoth}
+include_graphics(fig_path("11_B1_NonTaxOth"))
+```
+
+:::
+
+## Is it legal tradition?
+
+```{r b1-family}
+families <- c(anglophone_common = "anglophone", francophone_civil = "francophone")
+b1_fam <- b1 %>% filter(version == "within_family")
+n_fam <- sapply(names(families), function(f) sum(b1_country$legal_family == f))
+b1_fam_range <- function(f) {
+  x <- b1_fam$rho[b1_fam$legal_family == f]
+  paste(r2(min(x)), "to", r2(max(x)))
+}
+outside_iso3 <- b1_country$country[!b1_country$legal_family %in% names(families)]
+## The full-sample pair with the largest rho (main version, main measures), followed within each family
+top_pair <- b1 %>% filter(version == "all", tier == "main") %>% slice_max(abs(rho), n = 1)
+top_fam <- function(f) val(b1_fam, "rho", legal_family == f, revenue_measure == top_pair$revenue_measure, share == top_pair$share)
+if (nrow(top_pair) != 1) stop("B1: no single largest full-sample pair")
+```
+
+Design shares differ by legal tradition (A7), so a correlation across all countries can reflect legal tradition. We therefore recompute the whole main grid within the two largest legal families: the `r n_fam[["anglophone_common"]]` anglophone and the `r n_fam[["francophone_civil"]]` francophone countries. The other `r length(outside_iso3)` countries (`r and_list(cname(outside_iso3))`) enter neither. With 17 or 18 countries, each correlation is less precise than over the full sample.
+
+Among anglophone countries, the 20 correlations run from `r b1_fam_range("anglophone_common")`; among francophone countries, from `r b1_fam_range("francophone_civil")`. The full-sample pair with the largest correlation, `r tolower(top_pair$revenue_label)` and the `r share_prose[[top_pair$share]]` (`r r2(top_pair$rho)`), has ρ = `r r2(top_fam("anglophone_common"))` among anglophone and `r r2(top_fam("francophone_civil"))` among francophone countries. Table B1w gives all 40 correlations; we single none out.
+
+```{r b1-family-sacu}
+## Follow-up checked after seeing Figure B1: anglophone countries with and without the 5 SACU members (all anglophone)
+b1_ang        <- b1_fam %>% filter(legal_family == "anglophone_common")
+b1_ang_nosacu <- b1 %>% filter(version == "no_sacu_all", legal_family == "anglophone_common")
+if (!all(b1_country$legal_family[b1_country$sacu] == "anglophone_common")) stop("B1: a SACU member is not anglophone")
+rho_excl_ang        <- val(b1_ang, "rho", revenue_measure == "TaxRev", share == "exclusive_share")
+rho_excl_ang_nosacu <- val(b1_ang_nosacu, "rho", revenue_measure == "TaxRev", share == "exclusive_share")
+```
+
+Checked after seeing the figure: the five SACU members are all anglophone. Among the `r unique(b1_ang_nosacu$n)` anglophone countries outside SACU, the correlation of total tax revenue with the exclusive share falls from `r r2(rho_excl_ang)` to `r r2(rho_excl_ang_nosacu)`. Table B1ws gives the 20 anglophone correlations with and without the SACU members.
+
+```{r b1-family-sacu-table}
+b1_compare(list(`Anglophone` = b1_ang, `Anglophone without SACU` = b1_ang_nosacu),
+           paste("Table B1ws. Spearman ρ [leave-one-out range], anglophone common-law countries with and without the 5 SACU",
+                 "members, mean 2022–2024. Checked after seeing Figure B1, not pre-specified. Unit: country.",
+                 "Shading: |ρ|, darkest at 0.5 or more."))
+```
+
+::: {.panel-tabset}
+
+## Anglophone (`r n_fam[["anglophone_common"]]`)
+
+```{r b1-table-ang}
+b1_table("within_family", paste("Table B1w, anglophone common-law countries. Spearman ρ [leave-one-out range], mean 2022–2024.",
+                                "Unit: country. Shading: |ρ|, darkest at 0.5 or more."), fam = "anglophone_common")
+```
+
+## Francophone (`r n_fam[["francophone_civil"]]`)
+
+```{r b1-table-fra}
+b1_table("within_family", paste("Table B1w, francophone civil-law countries. Spearman ρ [leave-one-out range], mean 2022–2024.",
+                                "Unit: country. Shading: |ρ|, darkest at 0.5 or more."), fam = "francophone_civil")
+```
+
+:::
+
+
+# B2. Earmarking and budget comprehensiveness
+
+::: {.callout-note title="How to read this"}
+**PEFA PI-6** (2016 framework) scores how much central-government revenue and spending sits outside the financial reports. **PI-6.2** scores revenue outside financial reports; **PI-6.3** scores the financial reports of extrabudgetary units. Grades run from A (best) to D; we code A = 4, B = 3, C = 2, D = 1. D\* means D for lack of information and is coded D (hollow points in the figure). NR means not rated and is missing. The "+" of the overall PI-6 is dropped (D+ = D). We use each country's latest assessment and report its year.
+
+The **fund-or-agency share** is the share of a country's earmarked instruments paying into a fund, agency, social-security body or non-government body. It is an interim measure: a legal form as written, **not** budget status, since "fund" is anything the law calls a fund. The hard-commitment share is shown as a second measure.
+
+*Unit:* country with a 2016-framework PEFA, unweighted. *Set:* earmarked instruments (E2 + E3), social contributions excluded.
+:::
+
+```{r b2}
+b2_get <- function(column, v, p, s) val(b2, column, version == v, score == p, share == s)
+pre_2018 <- b2_countries %>% filter(pefa_year < 2018)
+n_plus_pi6 <- sum(grepl("+", b2_countries$pi6, fixed = TRUE))
+b2_change <- b2 %>%
+  filter(version == "from_2018") %>%
+  inner_join(b2 %>% filter(version == "latest") %>% select(score, share, rho_latest = rho), by = c("score", "share"))
+```
+
+```{r b2-fig, fig.cap = "B2. Fund-or-agency share (interim: legal form, not budget status) and PEFA grades PI-6.2 and PI-6.3"}
+include_graphics(fig_path("12_B2_pefa"))
+```
+
+Of the `r n_pefa` countries with a 2016-framework PEFA, `r b2_get("n", "latest", "pi6_2", "fund_agency_share")` have a grade on PI-6.2 and `r b2_get("n", "latest", "pi6_3", "fund_agency_share")` on PI-6.3; their latest assessments date from `r pefa_min` to `r pefa_max`. Most grades are D: `r b2_get("n_grade_D", "latest", "pi6_2", "fund_agency_share")` on PI-6.2 and `r b2_get("n_grade_D", "latest", "pi6_3", "fund_agency_share")` on PI-6.3, so each correlation mostly compares countries graded D with the others. The fund-or-agency share has a rank correlation of `r r2(b2_get("rho", "latest", "pi6_2", "fund_agency_share"))` with PI-6.2 and `r r2(b2_get("rho", "latest", "pi6_3", "fund_agency_share"))` with PI-6.3. The hard-commitment share has `r r2(b2_get("rho", "latest", "pi6_2", "hard_commitment_share"))` and `r r2(b2_get("rho", "latest", "pi6_3", "hard_commitment_share"))`.
+
+Restricting to assessments from 2018 or later drops only `r and_list(cname(pre_2018$country))` (assessed in `r and_list(unique(pre_2018$pefa_year))`), so this check is close to the main version by construction; no ρ moves by more than `r r2(max(abs(b2_change$rho - b2_change$rho_latest)))`.
+
+```{r b2-table}
+b2_show <- b2 %>%
+  filter(version %in% c("latest", "from_2018")) %>%
+  mutate(cell = rho_cell(rho, loo_min, loo_max),
+         years = paste0(year_min, "–", year_max),
+         score = factor(score, levels = c("pi6_2", "pi6_3", "pi6")),
+         version = factor(version, levels = c("latest", "from_2018"))) %>%
+  arrange(score, version) %>%
+  select(score_label, version_label, n, years, n_grade_D, n_dstar, share, cell) %>%
+  pivot_wider(names_from = share, values_from = cell)
+
+htmltools::div(class = "wide-table rho-table",
+  htmltools::HTML(kable(b2_show, format = "html", escape = FALSE, table.attr = 'class="table table-sm"',
+                        col.names = c("PEFA score", "Assessments", "n", "Years", "Grade D", "of which D*",
+                                      "Fund or agency (interim)", "Hard commitment"),
+                        align = "llrrrrcc",
+                        caption = paste0("Table B2. Spearman ρ [leave-one-out range] between each PEFA score and two design shares. ",
+                                         "Unit: country. Grades A = 4 to D = 1; D* coded D; NR missing. Overall PI-6: '+' dropped (",
+                                         n_plus_pi6, " of ", n_pefa, " grades carry one). Shading: |ρ|, darkest at 0.5 or more."))))
+```
+
+The country grades and shares are in the appendix.
+
+## Is it legal tradition?
+
+```{r b2-family}
+b2_fam <- b2 %>% filter(version == "within_family")
+b2_fam_n <- function(f, p) val(b2_fam, "n", legal_family == f, score == p, share == "fund_agency_share")
+b2_fam_above <- function(f, p) val(b2_fam, "n_above_D", legal_family == f, score == p, share == "fund_agency_share")
+unreadable <- b2_fam %>% filter(n_above_D <= 2) %>% distinct(legal_family, score, n_above_D)
+if (any(unreadable$legal_family != "francophone_civil")) stop("B2: an anglophone within-family rho rests on 2 or fewer countries")
+## The two full-sample pairs with the largest rho (latest assessment), followed within anglophone countries
+top_b2 <- b2 %>% filter(version == "latest") %>% slice_max(abs(rho), n = 2)
+score_short <- c(pi6 = "the overall PI-6", pi6_2 = "PI-6.2", pi6_3 = "PI-6.3")
+top_b2_ang <- function(i) val(b2_fam, "rho", legal_family == "anglophone_common", score == top_b2$score[i], share == top_b2$share[i])
+if (nrow(top_b2) != 2 || n_distinct(top_b2$share) != 1) stop("B2: the two largest full-sample pairs do not share one measure")
+## Checks of the text: the ranges of n and of grades above D are written as "lowest to highest"
+fam_n <- function(f) sort(unique(b2_fam$n[b2_fam$legal_family == f]))
+if (!identical(range(fam_n("anglophone_common")), c(b2_fam_n("anglophone_common", "pi6_3"), b2_fam_n("anglophone_common", "pi6"))) ||
+    !identical(range(fam_n("francophone_civil")), c(b2_fam_n("francophone_civil", "pi6_2"), b2_fam_n("francophone_civil", "pi6")))) {
+  stop("B2: the n ranges of the text do not match the table")
+}
+if (b2_fam_above("francophone_civil", "pi6") != 1 || b2_fam_above("francophone_civil", "pi6_2") != 2 ||
+    !setequal(unreadable$score, c("pi6", "pi6_2"))) stop("B2: the francophone sentence no longer matches the table")
+ang_above <- b2_fam$n_above_D[b2_fam$legal_family == "anglophone_common"]
+if (min(ang_above) != b2_fam_above("anglophone_common", "pi6_3") || max(ang_above) != b2_fam_above("anglophone_common", "pi6")) {
+  stop("B2: the anglophone above-D range of the text does not match the table")
+}
+```
+
+We repeat the B2 grid within the anglophone and francophone countries that have a PEFA grade. The samples are small: `r b2_fam_n("anglophone_common", "pi6_3")` to `r b2_fam_n("anglophone_common", "pi6")` anglophone and `r b2_fam_n("francophone_civil", "pi6_2")` to `r b2_fam_n("francophone_civil", "pi6")` francophone countries, depending on the score. Among francophone countries almost every grade is D. Only `r b2_fam_above("francophone_civil", "pi6")` country is graded above D on the overall PI-6 and `r b2_fam_above("francophone_civil", "pi6_2")` on PI-6.2, so those correlations rest on one or two countries and cannot be read.
+
+Among anglophone countries, `r b2_fam_above("anglophone_common", "pi6_3")` or `r b2_fam_above("anglophone_common", "pi6")` are graded above D on each score. The two full-sample pairs with the largest correlations, the `r share_prose[[top_b2$share[1]]]` with `r score_short[[top_b2$score[1]]]` (`r r2(top_b2$rho[1])`) and with `r score_short[[top_b2$score[2]]]` (`r r2(top_b2$rho[2])`), have ρ = `r r2(top_b2_ang(1))` and `r r2(top_b2_ang(2))` among anglophone countries. Table B2w gives all 12 within-family correlations; we single none out.
+
+```{r b2-table-family}
+b2_fam_show <- b2_fam %>%
+  mutate(cell = rho_cell(rho, loo_min, loo_max),
+         family = ifelse(legal_family == "anglophone_common", "Anglophone", "Francophone"),
+         reading = ifelse(n_above_D <= 2, "rests on 1 or 2 countries: cannot be read", ""),
+         score = factor(score, levels = c("pi6_2", "pi6_3", "pi6"))) %>%
+  arrange(family, score) %>%
+  select(family, score_label, n, n_above_D, reading, share, cell) %>%
+  pivot_wider(names_from = share, values_from = cell)
+
+htmltools::div(class = "wide-table rho-table",
+  htmltools::HTML(kable(b2_fam_show, format = "html", escape = FALSE, table.attr = 'class="table table-sm"',
+                        col.names = c("Legal family", "PEFA score", "n", "Graded above D", "Note",
+                                      "Fund or agency (interim)", "Hard commitment"),
+                        align = "llrrlcc",
+                        caption = paste("Table B2w. Spearman ρ [leave-one-out range] within legal family, latest assessment.",
+                                        "Unit: country with a PEFA grade. Where a leave-one-out ρ is undefined (removing the only",
+                                        "country graded above D), the range covers the other removals. Shading: |ρ|, darkest at 0.5 or more."))))
+```
+
+
+# What this can and cannot say
+
+```{r limits}
+fund_median <- median(table_a1$fund_agency_share)
+fund_at_one <- sum(table_a1$fund_agency_share == 1)
+a7b_med <- function(meas, grp) val(a7b_groups, "median", measure == meas, design_group == grp)
+main_groups <- names(design_prose)
+other_groups <- setdiff(main_groups, "anglophone_common")
+hard_other <- sapply(other_groups, function(g) a7b_med("hard_commitment_share", g))
+fund_other <- sapply(other_groups, function(g) a7b_med("fund_agency_share", g))
+n_d_62 <- b2_get("n_grade_D", "latest", "pi6_2", "fund_agency_share")
+n_62   <- b2_get("n", "latest", "pi6_2", "fund_agency_share")
+```
+
+These correlations describe how countries rank on two measures; they say nothing about why. The samples are small (`r n_b1` countries in B1, `r n_pefa` or fewer in B2), and the PEFA grades are ordinal with many ties: `r n_d_62` of the `r n_62` PI-6.2 grades are D. Causality can run both ways. Earmarking can shape what a country collects or reports, and a country that collects little or reports poorly can turn to earmarks for other reasons. The shares also depend on how completely each country's law is published and collected in the corpus, and corpus completeness may move with tax capacity and budget reporting. The validation (ANALYSIS_SPEC §4) will measure it per country.
+
+The leave-one-out range cannot detect a result driven by a cluster of countries. Removing one SACU member at a time leaves the other four in place, so the correlation of total tax revenue with the exclusive share stays between `r r2(val(b1_all_main, "loo_min", revenue_measure == "TaxRev", share == "exclusive_share"))` and `r r2(val(b1_all_main, "loo_max", revenue_measure == "TaxRev", share == "exclusive_share"))`; removing all five brings it to `r r2(rho_excl_nosacu)`.
+
+Three features of the data limit what the correlations can show. First, the SACU members' revenue ratios may include receipts from the SACU revenue pool, which come from membership of the customs union, not from earmarking. In WoRLD these receipts probably sit in trade taxes for Botswana, Namibia and Eswatini and in other non-tax revenue for Lesotho; we have not verified this, and Tables B1 and B1s show the results with and without the SACU members. Second, design moves with legal tradition: the median hard-commitment share is `r pct(a7b_med("hard_commitment_share", "anglophone_common"))` in anglophone countries against `r pct(min(hard_other))` to `r pct(max(hard_other))` in the other main groups, and the median fund-or-agency share `r pct(a7b_med("fund_agency_share", "anglophone_common"))` against `r pct(min(fund_other))` to `r pct(max(fund_other))` (A7(b)). Tax ratios and PEFA grades may differ by legal tradition too, so a correlation with a design share can reflect legal tradition rather than earmarking. Third, the fund-or-agency share varies little: its median across the 43 countries is `r pct(fund_median, 1)`, and `r fund_at_one` countries are at 100%. Most countries sit in a narrow band near the top, so their ranking rests on small differences.
+
+
+# Data sources
+
+```{r sources}
+## Key variables only: the revenue measures of B1 (means over the window) and the PEFA scores of B2
+key_vars <- c(TaxRev_avg = "Total tax revenue", TaxInc_avg = "Taxes on income, profits and capital gains",
+              TaxSal_avg = "Taxes on goods and services", TaxTra_avg = "Taxes on international trade",
+              NonTaxOth_avg = "Other non-tax revenue", TaxSalG_avg = "General taxes on goods and services (VAT)",
+              TaxSalExc_avg = "Excises", TaxIncI_avg = "Personal income tax", TaxIncC_avg = "Corporate income tax",
+              TotRev_avg = "Total revenue (robustness)", pefa_year = "PEFA assessment year",
+              pi6_ord = "PEFA PI-6 overall", pi6_2_ord = "PEFA PI-6.2", pi6_3_ord = "PEFA PI-6.3")
+sources_show <- sources %>%
+  filter(variable %in% names(key_vars)) %>%
+  mutate(label = key_vars[variable], variable = factor(variable, levels = names(key_vars))) %>%
+  arrange(variable) %>%
+  transmute(label, file, sheet_or_column, years_used, n_countries = as.character(n_countries))
+if (nrow(sources_show) != length(key_vars)) stop("Sources: a key variable is missing from 10_external_sources.csv")
+
+## resource_group is not an external download of 10_external_prepare.R: it comes from country_groups.csv
+sources_show <- bind_rows(sources_show,
+  data.frame(label = "Resource group (colour of the figures; B1 without oil exporters)", file = "country_groups.csv",
+             sheet_or_column = "resource_group (IMF Regional Economic Outlook, Sub-Saharan Africa, April 2026)",
+             years_used = "classification of April 2026", n_countries = "43"))
+
+htmltools::div(class = "wide-table",
+  htmltools::HTML(kable(sources_show, format = "html", table.attr = 'class="table table-sm table-striped"',
+                        col.names = c("Variable", "File", "Sheet: column", "Years", "Countries"),
+                        caption = "Data sources of the variables used in B1 and B2 (from 10_external_sources.csv). Revenue in % of GDP.")))
+```
+
+
+# Appendix {.unnumbered}
+
+## B2 by country {.unnumbered}
+
+```{r appendix-b2}
+b2_countries_show <- b2_countries %>%
+  transmute(country, resource_group = resource_labels[resource_group], pefa_year,
+            `PI-6` = pi6, `PI-6.2` = pi6_2, `PI-6.3` = pi6_3, n_earmarked,
+            fund_agency_share = pct(fund_agency_share), hard_commitment_share = pct(hard_commitment_share))
+htmltools::div(class = "wide-table",
+  htmltools::HTML(kable(b2_countries_show, format = "html", table.attr = 'class="table table-sm table-striped"',
+                        col.names = c("Country", "Resource group", "Assessment year", "PI-6", "PI-6.2", "PI-6.3",
+                                      "Earmarked instruments", "Fund or agency (interim)", "Hard commitment"),
+                        caption = "B2. Latest 2016-framework PEFA grades (as published: D* = insufficient information; NR = not rated or not applicable) and the two design shares (unit: country)")))
+```
+
+## B1 by country {.unnumbered}
+
+```{r appendix-b1}
+b1_country_show <- b1_country %>%
+  transmute(country, resource_group = resource_labels[resource_group], sacu = ifelse(sacu, "yes", ""),
+            n_earmarked, tax_revenue = formatC(TaxRev_avg, format = "f", digits = 1),
+            across(all_of(share_order), ~ pct(.x)))
+htmltools::div(class = "wide-table",
+  htmltools::HTML(kable(b1_country_show, format = "html", table.attr = 'class="table table-sm table-striped"',
+                        col.names = c("Country", "Resource group", "SACU", "Earmarked instruments",
+                                      "Tax revenue, % of GDP (2022–2024)", share_short[share_order]),
+                        caption = "B1. Total tax revenue and the four design shares (unit: country)")))
+```

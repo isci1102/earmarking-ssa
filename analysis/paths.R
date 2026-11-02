@@ -28,9 +28,17 @@ for (f in c(file_stacked, file_build_report, file_country_groups)) {
   if (!file.exists(f)) stop("Input file not found: ", f)
 }
 
+## --- External downloads (ANALYSIS_SPEC §3), read by 10_external_prepare.R only ---
+## Their existence is checked in 10_external_prepare.R, not in the loop above, so that 00–06 run without them.
+file_world <- file.path(dir_supporting, "IMF_World_Revenue_Longitudinal_Database_2026.xlsx")   # sheet Data
+file_grd   <- file.path(dir_supporting, "UNU_WIDER_GRD_2025.xlsx")                              # sheet Merged
+file_pefa  <- file.path(dir_supporting, "PEFA_assessment_scores_2016.csv")
+file_wgi   <- file.path(dir_supporting, "WGI_2026.xlsx")                                        # sheet ge
+
 ## --- Datasets created by the scripts ---
 file_analysis_rds  <- file.path(dir_created, "ssa_earmarks_analysis_prelim_2026-11.rds")
 file_documents_rds <- file.path(dir_created, "ssa_earmarks_documents_prelim_2026-11.rds")   # 01_descriptives.R
+file_external_rds  <- file.path(dir_created, "ssa_external_indicators_prelim_2026-11.rds")  # 10_external_prepare.R
 
 ## --- Outputs of one pass ---
 ## The date is a constant, not Sys.Date(): every script of one pass writes to the same folder, and the
