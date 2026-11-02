@@ -57,7 +57,7 @@ Note for the text: the E1, E4 and E0 counts are incidental. They count only inst
 | # | Question | Exhibit | Unit | Main measure |
 |---|---|---|---|---|
 | A1 | How much earmarking, and where? | Dot plot of countries: E2 + E3 instruments and allocations, coloured by legal family | instrument | $n^{E}_c$; E3 share $= n^{E3}_c/n^{E}_c$; secondary: E1, E2 and E3 shares of $n^{A}_c$ |
-| A2 | What finances earmarks, and what do they finance? | **(a) Core heatmap** of `base_group` (12 rows, below) × COFOG division. Each cell shows the number of instrument–function links, labelled with the number of countries. **(b) Recipient-form shares.** **(c) One Sankey per country**, `base_group` → COFOG division, restricted legs, flows = number of links (not money). In the main text: 3–4 contrasting countries (e.g. one UEMOA, one CEMAC, one anglophone, one lusophone). All countries in an appendix of country profiles. **(d)** `instrument_type` (GFS) composition of earmarked instruments, country-equal and pooled (table): what kind of charges the counts are made of | instrument × division; (d) instrument | link counts; country-equal shares |
+| A2 | What finances earmarks, and what do they finance? | **(a) Core heatmap** of `base_group` (12 rows, below) × COFOG division. Each cell shows the number of instrument–function links, labelled with the number of countries. **(a′) Zoom on 704** (main text): the same heatmap restricted to links to 704 Economic affairs, with its groups 7041–7049 as columns, because 704 holds over half of the links. **(b) Recipient-form shares.** **(c) One Sankey per country**, `base_group` → COFOG division, restricted legs, flows = number of links (not money). In the main text: 3–4 contrasting countries (e.g. one UEMOA, one CEMAC, one anglophone, one lusophone). All countries in an appendix of country profiles. **(d)** `instrument_type` (GFS) composition of earmarked instruments, country-equal and pooled (table): what kind of charges the counts are made of | instrument × division; (d) instrument | link counts; country-equal shares |
 | A3 | Is there an economic rationale? | Stacked bars of `benefit_link` (corrective / compensatory / benefit / sectoral / general_revenue / unlinked), overall and by legal family | instrument × division | share of links in each class |
 | A4 | How binding are earmarks? | Design table: E3 vs E2; `commitment_strength` (instrument maximum); vehicle; `legal_rank`; `determinacy` | instrument (commitment, E-class); allocation (vehicle, rank, determinacy) | country-equal shares |
 | A5 | Which earmarks are reform candidates? | Cross-table of benefit link × commitment strength. Highlight "unlinked or general revenue, and hard": rigid with no economic rationale | instrument × division | share of links in each cell |
@@ -93,6 +93,13 @@ The country's fund-or-agency share is the share of its earmarked instruments wit
 These are legal forms as written (`fund` is any recipient the text calls a fund), not budget status, so the measure is not read as extrabudgetary. A `budget_status` variable for fund rows (on-budget / off-budget / unknown) is built before B2.
 
 The legal-family grouping (`legal_family`) runs through A1–A5 as a breakdown wherever it is informative. A7 uses `design_group`.
+
+**Illustrative examples** (`06_examples.R`, run after `03_sankey.R`). Cases that show what a classification means. They illustrate; they never measure prevalence.
+- **Cells:** the 8 most prominent cells of the A2a and A2a′ heatmaps (by number of countries); each of the six benefit-link classes; 2–3 examples per country for the country profiles, next to its Sankey page.
+- **Eligible rows:** restricted top-level legs of earmarked instruments (social contributions excluded); `row_kind = instrument`; `determinacy = determinate` with `share_basis` stated or `whole_proceeds_implied`; `charging_provision_in_corpus = 1`; `ai_confidence = high` on both the allocation and the instrument, or `medium` when a cell has no high-confidence case.
+- **Selection:** a random draw with a fixed seed; never the same country twice in a cell; spread across `design_group`.
+- **Contents:** country, instrument, base category, destination, recipient form, COFOG group, share, benefit link, legal reference, the verbatim excerpt (joined from the allocation JSON) and a short English gloss, marked as a translation.
+- **Check:** each example is read against the source PDF. A wrong case is replaced by the next draw and the reason is logged (`06_examples_review.csv`); the log feeds the validation (§4).
 
 ## 3. Analysis with external data (section B)
 
@@ -140,7 +147,7 @@ Interpretation rule for B: associations only. Legal family, CFA membership and c
 - **Replaced:** the A/B/C eligibility grades (by the completeness index) and the ten-table data engineering (by the build script).
 - **Out of scope:** North Africa and the European comparators.
 - **Dropped:** OBS, WGI as an outcome, Afrobarometer and fiscal-rules correlations; clustering.
-- **Appendix only:** 4-digit COFOG.
+- **Appendix only:** 4-digit COFOG, except the 704 zoom of A2a′ (main text).
 - **Possible:** WOFI decentralisation, as one paragraph in A6 only if subnational channels turn out large.
 
 ## 6. R scripts
@@ -154,6 +161,7 @@ Interpretation rule for B: associations only. Legal family, CFA membership and c
 | `03_sankey.R` | A2c: one PDF page per country (ggalluvial) |
 | `04_design.R` | A4, A5, A7 |
 | `05_territorial.R` | A6 |
+| `06_examples.R` | illustrative examples (§2): heatmap cells, benefit-link classes, country profiles; drawn by rule, hand-checked |
 | `qmd/first_results_database.qmd` | first preliminary report: assembles the D and A outputs with comments; reads saved outputs only and computes nothing new |
 | `10_external_prepare.R` | reads the raw downloads (WoRLD, GRD, PEFA PI-6; resource revenue) from `analysis_data\supporting-data\` → `ssa_external_indicators_prelim_2026-11.rds`, one row per country, with the source and years recorded for each variable |
 | `11_exposure.R` | B1 |
@@ -161,4 +169,4 @@ Interpretation rule for B: associations only. Legal family, CFA membership and c
 | `qmd/first_results_external.qmd` | second preliminary report: the B outputs |
 | `run_all.R` | regenerates every table and figure from the two `.rds` files |
 
-Order: `00`–`05` → `first_results_database.qmd` → download the external data → `10`–`12` → `first_results_external.qmd`. Both reports are preliminary.
+Order: `00`–`06` → `first_results_database.qmd` → download the external data → `10`–`12` → `first_results_external.qmd`. Both reports are preliminary.

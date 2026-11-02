@@ -1,6 +1,7 @@
 ## ============================================================================
-## 02_composition.R — A1 (how much earmarking, and where), A2a (base group × COFOG division), A2b (recipient
-## forms), A2d (GFS instrument types) and A3 (benefit links)
+## 02_composition.R — A1 (how much earmarking, and where), A2a (base group × COFOG division), A2a′ (zoom on
+## 704 Economic affairs: base group × COFOG group), A2b (recipient forms), A2d (GFS instrument types) and A3
+## (benefit links)
 ## ANALYSIS_SPEC §0 and §2; units in DERIVED_TABLE_SPEC §3; figures by docs/PLOT_STYLE.md.
 ## Inputs: the analysis .rds (00_load.R, with base_group), helpers.R, and 00_load_summary.csv and 01_tableA1.csv
 ## (for the checks).
@@ -14,8 +15,9 @@
 ## Levels: links and benefit links use the indicator legs of helpers.R (top-level restricted legs, or the
 ## shallowest restricted level for instruments with none at the top), the same rule as Table A1.
 ## Allocation-level counts and composition (A1 allocations, A2b) use top_level = 1 restricted allocations.
-## Outputs: 02_A1_by_country, 02_A2a_links, 02_A2b_recipient_form, 02_A2d_instrument_type, 02_A3_benefit_link
-## (one file per set) and 02_A1_by_country_columns.csv in dir_tables; 4 figures (PDF + PNG) in dir_figures.
+## Outputs: 02_A1_by_country, 02_A2a_links, 02_A2a_zoom704, 02_A2b_recipient_form, 02_A2d_instrument_type,
+## 02_A3_benefit_link (one file per set) and 02_A1_by_country_columns.csv in dir_tables; 5 figures (PDF + PNG)
+## in dir_figures.
 ## ============================================================================
 
 source(here::here("analysis", "paths.R"))
@@ -86,6 +88,13 @@ division_labels <- c("701" = "701\nGeneral\npublic\nservices", "702" = "702\nDef
                      "707" = "707\nHealth", "708" = "708\nRecreation,\nculture,\nreligion",
                      "709" = "709\nEducation", "710" = "710\nSocial\nprotection",
                      "unallocated" = "Unallo-\ncated")
+## COFOG groups of 704 Economic affairs (A2a′); not_coded = a 704 leg with no cofog_group, last
+group_704_levels <- c(as.character(7041:7049), "not_coded")
+group_704_labels <- c("7041" = "7041\nGeneral\neconomic,\nlabour", "7042" = "7042\nAgriculture,\nforestry,\nfishing",
+                      "7043" = "7043\nFuel and\nenergy", "7044" = "7044\nMining,\nmanufact.,\nconstruction",
+                      "7045" = "7045\nTransport", "7046" = "7046\nCommuni-\ncation",
+                      "7047" = "7047\nOther\nindustries", "7048" = "7048\nR&D", "7049" = "7049\nn.e.c.",
+                      "not_coded" = "Group\nnot coded")
 base_group_labels <- c(broad_bases = "Broad bases", extractive = "Extractive", fuel_energy = "Fuel and energy",
                        forestry_fisheries_agriculture = "Forestry, fisheries, agriculture",
                        environment_water = "Environment and water", telecom_media = "Telecom and media",
@@ -141,8 +150,10 @@ for (s in names(sets)) {
     distinct(country, allocation_id, recipient_form)
   if (any(duplicated(allocations[, c("country", "allocation_id")]))) stop(s, ": recipient_form varies within an allocation")
 
-  ## Links: instrument × cofog_division over the indicator legs (helpers.R), with the instrument's base group
-  links <- get_link_pairs(get_indicator_legs(rows)) %>%
+  ## Links: instrument × cofog_division over the indicator legs (helpers.R), with the instrument's base group.
+  ## The legs are kept for the 704 zoom (A2a′), which reads their cofog_group.
+  legs <- get_indicator_legs(rows)
+  links <- get_link_pairs(legs) %>%
     left_join(instruments %>% select(country, instrument_id, base_group, legal_family),
               by = c("country", "instrument_id"))
   bad_division <- setdiff(unique(links$cofog_division), division_levels)
@@ -214,6 +225,40 @@ for (s in names(sets)) {
            share_country_equal, share_pooled)
   if (sum(a2a$n_links) != nrow(links)) stop(s, ": A2a heatmap total differs from the number of links")
   check_share(a2a$share_country_equal, paste(s, "A2a"))
+
+
+  ## --- A2a′: zoom on 704 Economic affairs (unit: instrument × cofog_group) ---
+  ## 704 holds over half of the links (ANALYSIS_SPEC §2), so its groups 7041–7049 get their own heatmap. Same
+  ## legs as A2a, restricted to cofog_division = 704. A cell counts distinct (instrument, cofog_group) pairs, so
+  ## an instrument linked to two 704 groups counts in both. A 704 leg with no cofog_group goes to not_coded,
+  ## a column kept only when such legs exist.
+  zoom <- legs %>%
+    filter(cofog_division == "704") %>%
+    mutate(cofog_group = coalesce(cofog_group, "not_coded")) %>%
+    distinct(country, instrument_id, cofog_group) %>%
+    left_join(instruments %>% select(country, instrument_id, base_group), by = c("country", "instrument_id"))
+  bad_group <- setdiff(unique(zoom$cofog_group), group_704_levels)
+  if (length(bad_group) > 0) stop(s, ": cofog_group of 704 legs outside 7041–7049: ", paste(bad_group, collapse = ", "))
+  zoom_levels <- if (any(zoom$cofog_group == "not_coded")) group_704_levels else setdiff(group_704_levels, "not_coded")
+  zoom$cofog_group <- factor(zoom$cofog_group, levels = zoom_levels)
+
+  zoom_by_country <- country_composition(zoom, c("base_group", "cofog_group"), paste(s, "A2a zoom 704"))
+  zoom704 <- summarise_composition(zoom_by_country, c("base_group", "cofog_group")) %>%
+    rename(n_pairs = n) %>%
+    mutate(unit = "instrument x cofog_group within 704 (indicator legs; an instrument in two 704 groups counts in both)",
+           set = set_label[[s]]) %>%
+    select(set, unit, base_group, cofog_group, n_pairs, n_countries, countries_in_mean,
+           share_country_equal, share_pooled)
+  if (sum(zoom704$n_pairs) != nrow(zoom)) stop(s, ": A2a zoom total differs from the number of 704 pairs")
+  check_share(zoom704$share_country_equal, paste(s, "A2a zoom 704"))
+
+  ## Each base group's distinct instruments in the zoom = its 704 cell in A2a (a 704 link is one instrument)
+  check_zoom <- zoom %>%
+    distinct(country, instrument_id, base_group) %>%
+    count(base_group, name = "n_zoom", .drop = FALSE) %>%
+    full_join(a2a %>% filter(cofog_division == "704") %>% select(base_group, n_links), by = "base_group") %>%
+    mutate(n_zoom = coalesce(n_zoom, 0L), n_links = coalesce(n_links, 0L))
+  if (any(check_zoom$n_zoom != check_zoom$n_links)) stop(s, ": instruments of the 704 zoom differ from the 704 cells of A2a")
 
 
   ## --- A2b: recipient form (unit: allocation, top level, restricted) ---
@@ -299,19 +344,27 @@ for (s in names(sets)) {
       "=", largest_cell$n_links, "links",
       " | links to 704 (country-equal share):",
       round(sum(a2a$share_country_equal[a2a$cofog_division == "704"]), 3), "\n")
+  zoom_instruments <- zoom %>% count(country, instrument_id)
+  largest_zoom <- zoom704 %>% slice_max(n_pairs, n = 1, with_ties = FALSE)
+  cat("704 zoom: instrument x group pairs", nrow(zoom), " | instruments", nrow(zoom_instruments),
+      " | in two or more 704 groups", sum(zoom_instruments$n > 1), " | countries", n_distinct(zoom$country),
+      " | largest cell:", as.character(largest_zoom$base_group), "x", as.character(largest_zoom$cofog_group),
+      "=", largest_zoom$n_pairs, "\n")
   cat("Recipient forms, country-equal:",
       paste(a2b$recipient_form[1:3], round(a2b$share_country_equal[1:3], 3), collapse = " | "), "\n")
   a3_all <- a3 %>% filter(group == "all countries")
   cat("Benefit link, country-equal (all countries):",
       paste(a3_all$benefit_link, round(a3_all$share_country_equal, 3), collapse = " | "), "\n")
 
-  results[[s]] <- list(a1 = a1, a2a = a2a, a2b = a2b, a2d = a2d, a3 = a3, n_links = nrow(links),
-                       n_null = nrow(null_links), n_allocations = nrow(allocations))
+  results[[s]] <- list(a1 = a1, a2a = a2a, zoom704 = zoom704, a2b = a2b, a2d = a2d, a3 = a3, n_links = nrow(links),
+                       n_null = nrow(null_links), n_allocations = nrow(allocations),
+                       n_zoom_pairs = nrow(zoom), n_zoom_instruments = nrow(zoom_instruments))
 
 
   ## --- Write the tables of the set ---
   write.csv(a1,  file.path(dir_tables, paste0("02_A1_by_country", set_suffix[[s]], ".csv")), row.names = FALSE)
   write.csv(a2a, file.path(dir_tables, paste0("02_A2a_links", set_suffix[[s]], ".csv")), row.names = FALSE)
+  write.csv(zoom704, file.path(dir_tables, paste0("02_A2a_zoom704", set_suffix[[s]], ".csv")), row.names = FALSE)
   write.csv(a2b, file.path(dir_tables, paste0("02_A2b_recipient_form", set_suffix[[s]], ".csv")), row.names = FALSE)
   write.csv(a2d, file.path(dir_tables, paste0("02_A2d_instrument_type", set_suffix[[s]], ".csv")), row.names = FALSE)
   write.csv(a3,  file.path(dir_tables, paste0("02_A3_benefit_link", set_suffix[[s]], ".csv")), row.names = FALSE)
@@ -396,6 +449,47 @@ fig_a2a <- ggplot(fig_a2a_data, aes(x = cofog_division, y = base_group)) +
 save_fig(fig_a2a, "02_A2a_heatmap", width = 10, height = 6.5)
 
 
+## --- A2a′: heatmap of base group × COFOG group within 704 ---
+## Same style as A2a: fill = number of pairs on a square-root scale, label = number of countries, empty cells
+## white, white labels on the darker cells. The fill range is the zoom's own (A2a's maximum would wash it out).
+## Groups with no pair in any base group (e.g. 7049) are dropped from the figure only; the table keeps them.
+empty_groups <- headline$zoom704 %>%
+  group_by(cofog_group) %>%
+  summarise(n = sum(n_pairs)) %>%
+  filter(n == 0) %>%
+  pull(cofog_group) %>%
+  as.character()
+fig_zoom_data <- headline$zoom704 %>%
+  filter(!cofog_group %in% empty_groups) %>%
+  mutate(cofog_group = droplevels(cofog_group)) %>%
+  mutate(fill  = ifelse(n_pairs > 0, n_pairs, NA),
+         label = ifelse(n_pairs > 0, n_countries, ""),
+         dark  = n_pairs > max(n_pairs) / 4)
+
+fig_zoom <- ggplot(fig_zoom_data, aes(x = cofog_group, y = base_group)) +
+  geom_tile(aes(fill = fill), colour = "white", linewidth = 0.6) +
+  geom_text(aes(label = label, colour = dark), size = 3.6) +
+  scale_fill_gradient(low = seq_low, high = seq_high, trans = "sqrt", na.value = "white",
+                      name = "Number of instrument-group pairs") +
+  scale_colour_manual(values = c(`FALSE` = col_ink, `TRUE` = "white"), guide = "none") +
+  scale_x_discrete(labels = group_704_labels, position = "top") +
+  scale_y_discrete(limits = rev(levels(fig_zoom_data$base_group)), labels = base_group_labels) +
+  labs(title = "Inside 704 Economic affairs: which sectors earmarked revenue finances",
+       x = NULL, y = NULL,
+       caption = paste0("Unit: instrument x COFOG group within 704 Economic affairs (restricted legs; n = ",
+                        headline$n_zoom_pairs, " pairs from ", headline$n_zoom_instruments, " instruments).\n",
+                        "An instrument linked to two 704 groups counts in both. Fill: number of pairs, not revenue.\n",
+                        "Label: number of countries with at least one pair in the cell (of 43).",
+                        if (length(empty_groups) > 0) paste0(" Groups with no pair not shown: ",
+                                                             paste(empty_groups, collapse = ", "), "."),
+                        "\n", caption_set)) +
+  theme(panel.grid.major = element_blank(),
+        axis.text.x = element_text(size = 9, lineheight = 0.9),
+        legend.title = element_text(colour = col_grey_dark, size = rel(0.85)),
+        legend.key.width = unit(1.6, "cm"))
+save_fig(fig_zoom, "02_A2a_zoom704", width = 10, height = 6.5)
+
+
 ## --- A2b: recipient form, one horizontal stacked bar ---
 ## The 5 largest forms by country-equal share, the rest folded into Other (grey, PLOT_STYLE rule 1).
 top_forms <- as.character(headline$a2b$recipient_form[1:5])
@@ -453,6 +547,7 @@ save_fig(fig_a3, "02_A3_benefit_link", width = 9, height = 4.5)
 
 
 ## --- Summary ---
-cat("\nTables:", length(results) * 5 + 1, "files 02_*.csv in", dir_tables, "\n")
-cat("Figures: 02_A1_countries, 02_A2a_heatmap, 02_A2b_recipient_form, 02_A3_benefit_link (PDF + PNG) in",
+cat("\nTables:", length(results) * 6 + 1, "files 02_*.csv in", dir_tables, "\n")
+cat("Figures: 02_A1_countries, 02_A2a_heatmap, 02_A2a_zoom704, 02_A2b_recipient_form, 02_A3_benefit_link",
+    "(PDF + PNG) in",
     dir_figures, "\n")

@@ -40,5 +40,7 @@ dir_output  <- file.path(root, "analysis", "output")
 out_dir     <- file.path(dir_output, run_date)
 dir_tables  <- file.path(out_dir, "tables")
 dir_figures <- file.path(out_dir, "figures")   # used by save_fig() in theme_earmark.R
+dir_figures_sankey <- file.path(dir_figures, "countries_sankey_plots")   # one PNG per country, 03_sankey.R
 dir.create(dir_tables,  recursive = TRUE, showWarnings = FALSE)
 dir.create(dir_figures, recursive = TRUE, showWarnings = FALSE)
+dir.create(dir_figures_sankey, recursive = TRUE, showWarnings = FALSE)

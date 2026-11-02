@@ -32,6 +32,7 @@ Colours, theme and export are coded once in `analysis/theme_earmark.R`. Every fi
 
 - Flows go from base group to COFOG division and count instrument–function links. The caption says "number of links, not revenue".
 - Colour the flows by the **source** side with `pal_cat` (the top 5 base groups plus "Other" in grey).
+- Catch-all groups (services_acts_other) are never among the coloured top 5.
 - Nodes are dark grey bars with labels. Keep the same node order in every country, so the country pages can be compared.
 
 ## 4. Export
