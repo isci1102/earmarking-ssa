@@ -296,9 +296,18 @@ a1_columns <- data.frame(
                  "earmarked instruments whose restricted legs all sit below the top level",
                  "E3 / n_earmarked, both without social contributions",
                  "at least one restricted leg to fund, agency, social_security_institution or non_government_body",
-                 "pairs of earmarked instruments' restricted legs with non-null benefit_link",
-                 "pairs in corrective, compensatory, benefit or sectoral (first value in the test order)",
-                 "maximum commitment_strength over restricted legs = hard")
+                 paste("number of links between an earmarked instrument and a COFOG division it finances through a",
+                       "restricted leg; a division counts once per instrument, so a tax split between two health",
+                       "bodies is one link; links with an unknown function (cofog_division = unallocated) are left out.",
+                       "Denominator of benefit_linked_share; can exceed n_earmarked when an instrument finances",
+                       "several functions"),
+                 paste("share of those links whose benefit_link ties the taxed base to the use: corrective,",
+                       "compensatory, benefit or sectoral (not general_revenue or unlinked). When the legs of one link",
+                       "carry different classes, the link takes the first in the order corrective, compensatory,",
+                       "benefit, sectoral, general_revenue, unlinked"),
+                 paste("share of earmarked instruments with at least one hard restricted leg: a stated share, a dedicated",
+                       "vehicle (fund, agency, special account, etc.) and enacted in the constitution, an organic law or",
+                       "an ordinary law. The instrument takes its strongest leg, so one hard leg is enough"))
 )
 if (nrow(a1_columns) != ncol(table_a1)) stop("a1_columns does not describe every A1 column")
 
