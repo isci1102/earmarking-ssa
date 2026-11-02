@@ -15,6 +15,7 @@
   - The E-class is unaffected: it already reads every level (a general-budget or unrestricted leg at any level makes the instrument E2).
   - Deeper levels (`share_level ≥ 2`, 153 of 2,980 groups, 5%) are used as detail only: in A6 (territorial channels, where most sub-keys sit), and in one appendix line on how many groups have sub-keys and how many of those add a function absent from level 1. Report the number of E2 instruments whose only diverting leg is below their top level (40).
   - Shares are never compared or added across levels. An effective share (the product down the chain) is computed only when every parent share is stated.
+  - Instrument-level indicators of earmarked instruments (vehicle, commitment, benefit link) use the restricted legs at the shallowest level where the instrument has one. For all but 27 earmarked instruments (13 countries; social contributions excluded) this is the top level; the 27 have restricted legs only below it. Table A1 reports their number per country (`n_earmarked_no_top_restricted`).
 - **Class placeholders** (`row_kind = class_placeholder`, about 11% of instruments): one row standing for a class of charges the corpus does not enumerate. Use `row_kind` directly; no extra flag.
   - The instrument unit is labelled "instruments and classes of charges".
   - Main results are reported with and without placeholders.

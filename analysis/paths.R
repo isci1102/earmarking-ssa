@@ -14,6 +14,8 @@ root <- here::here()
 ## created-data:    every dataset a script creates (stacked CSV, .rds files)
 dir_supporting <- file.path(root, "analysis_data", "supporting-data")
 dir_created    <- file.path(root, "analysis_data", "created-data")
+## countries:       per-country corpus and extraction outputs ({ISO3}/outputs/allocations/*.json); read only
+dir_countries  <- file.path(root, "countries")
 
 ## --- Inputs ---
 ## Frozen stacked table (built by build_instrument_destination.py) and its build report.
@@ -27,7 +29,8 @@ for (f in c(file_stacked, file_build_report, file_country_groups)) {
 }
 
 ## --- Datasets created by the scripts ---
-file_analysis_rds <- file.path(dir_created, "ssa_earmarks_analysis_prelim_2026-11.rds")
+file_analysis_rds  <- file.path(dir_created, "ssa_earmarks_analysis_prelim_2026-11.rds")
+file_documents_rds <- file.path(dir_created, "ssa_earmarks_documents_prelim_2026-11.rds")   # 01_descriptives.R
 
 ## --- Outputs of one pass ---
 ## The date is a constant, not Sys.Date(): every script of one pass writes to the same folder, and the
