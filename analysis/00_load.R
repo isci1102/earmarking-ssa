@@ -166,6 +166,40 @@ n_eclass <- earmarks %>%
 if (any(n_eclass$n > 1)) stop(sum(n_eclass$n > 1), " instruments with more than one earmark_class")
 
 
+## --- Base groups: the A2 grouping (ANALYSIS_SPEC §2) ---
+## base_category records what is taxed; the 26 categories are grouped into 12 rows for the A2a heatmap, the
+## A2c Sankeys and A7. Factor order as listed in the spec. harmful_consumption keeps its own row although small,
+## because it is the corrective case readers look for.
+base_groups <- list(
+  broad_bases                    = c("general_income", "general_consumption", "general_trade", "general_revenue_class"),
+  extractive                     = c("extractive_resources"),
+  fuel_energy                    = c("fuel_energy"),
+  forestry_fisheries_agriculture = c("forestry_wildlife_fisheries", "agricultural_commodities"),
+  environment_water              = c("pollution_waste_environment", "water"),
+  telecom_media                  = c("telecom_ict_postal", "media_advertising"),
+  transport                      = c("motor_vehicles_road", "air_maritime_rail_transport"),
+  financial_insurance            = c("financial_insurance"),
+  harmful_consumption            = c("harmful_consumption"),
+  gambling_tourism               = c("gambling_lotteries", "tourism_hospitality"),
+  payroll_property               = c("payroll_employment", "property_land", "construction_urban"),
+  services_acts_other            = c("health_education_services", "regulated_activities_professions",
+                                     "public_administrative_acts", "persons", "other_specific")
+)
+
+## Every base_category level in exactly one group
+if (any(duplicated(unlist(base_groups)))) stop("base_groups: a base_category is in two groups")
+check_levels(unlist(base_groups), levels_list$base_category, "base_groups")
+missing_categories <- setdiff(levels_list$base_category, unlist(base_groups))
+if (length(missing_categories) > 0) stop("base_groups: categories without a group: ", paste(missing_categories, collapse = ", "))
+
+earmarks$base_group <- NA_character_
+for (g in names(base_groups)) {
+  earmarks$base_group[earmarks$base_category %in% base_groups[[g]]] <- g
+}
+earmarks$base_group <- factor(earmarks$base_group, levels = names(base_groups))
+if (any(is.na(earmarks$base_group))) stop(sum(is.na(earmarks$base_group)), " rows without a base_group")
+
+
 ## --- Legal references: "a; b" cells into list-columns ---
 ## The governing (latest) text comes first, amended texts after "; " (allocation prompt §4.7, instrument
 ## prompt §4.6). Only these two columns are split; the original strings are kept. instr_legal_reference is
@@ -263,11 +297,12 @@ if (nrow(earmarks) != n_before) stop("Join with country_groups changed the numbe
 ## Instrument level: one row per (country, instrument_id). row_kind, instrument_type and earmark_class are
 ## instrument properties, so distinct() must return exactly one row per instrument.
 instruments <- earmarks %>%
-  distinct(country, instrument_id, row_kind, instrument_type, earmark_class,
+  distinct(country, instrument_id, row_kind, instrument_type, earmark_class, base_group,
            earmarked, assigned, social_contribution)
 if (nrow(instruments) != sum(check_by_country$instruments)) {
-  stop("row_kind, instrument_type or earmark_class varies within an instrument")
+  stop("row_kind, instrument_type, earmark_class or base_group varies within an instrument")
 }
+base_group_counts <- table(instruments$base_group)
 
 n_rows        <- nrow(earmarks)
 n_instruments <- nrow(instruments)
@@ -292,6 +327,7 @@ countries_by_design <- earmarks %>%
 cat("Rows:", n_rows, " | instruments:", n_instruments, " | allocations:", n_allocations,
     " | countries:", n_distinct(earmarks$country), "\n")
 cat("E-class (instruments):", paste(names(eclass_counts), eclass_counts, sep = " ", collapse = " | "), "\n")
+cat("Base groups (instruments):", paste(names(base_group_counts), base_group_counts, sep = " ", collapse = " | "), "\n")
 cat("Class placeholders (instruments):", n_placeholder, "\n")
 cat("Social contributions (instruments):", n_social, "\n")
 cat("Earmarked E2+E3 (instruments): with social contributions", n_earmarked, " | without", n_earmarked_x, "\n")

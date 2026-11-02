@@ -2,7 +2,8 @@
 ## 01_descriptives.R — D1 (Table 1, the database at a glance) and D2 (Appendix Table A1, one row per country)
 ## ANALYSIS_SPEC §0 and §1; vehicle definitions in ANALYSIS_SPEC §2; benefit-link test order in
 ## DERIVED_TABLE_SPEC §2.4.
-## Inputs: the analysis .rds (00_load.R), 00_load_summary.csv (for the checks), and the "documents" list of each
+## Inputs: the analysis .rds (00_load.R), helpers.R (indicator legs, instrument × division links),
+## 00_load_summary.csv (for the checks), and the "documents" list of each
 ## countries/{ISO3}/outputs/allocations/{ISO3}_EARMARK_ALLOCATIONS.json (read only).
 ## Outputs: ssa_earmarks_documents_prelim_2026-11.rds (one row per country × document); 01_table1.csv,
 ## 01_tableA1.csv and 01_tableA1_columns.csv (unit and definition of each A1 column) in dir_tables.
@@ -11,6 +12,7 @@
 ## ============================================================================
 
 source(here::here("analysis", "paths.R"))
+source(here::here("analysis", "helpers.R"))   # indicator legs and instrument × division links
 
 library(dplyr)
 library(jsonlite)
@@ -199,20 +201,10 @@ law_year_median <- allocations_top %>%
 
 
 ## --- Table A1: instrument-level indicators of earmarked instruments ---
-## Restricted legs read by the indicators (decision of 2 Nov 2026): for each earmarked instrument (no social
-## contributions), its restricted legs at the shallowest level where it has a restricted leg.
-## - An instrument with a top-level restricted leg keeps its top-level restricted legs, so nothing changes for it.
-##   The rule is written on top_level, not on share_level: an instrument can also sit in a group with no
-##   level-1 row, whose top level is level 2, and a minimum over share_level would drop those top-level legs.
-## - The few E2 instruments whose restricted legs all sit below the top level (the E-class reads every level)
-##   keep their restricted legs at the shallowest share_level; otherwise they would stay in n_earmarked and
-##   count as "no" on every indicator. Their number is reported in n_earmarked_no_top_restricted.
-indicator_legs <- earmarks %>%
-  filter(earmarked, !social_contribution, leg_class == "restricted") %>%
-  group_by(country, instrument_id) %>%
-  mutate(no_top_restricted = !any(top_level == 1)) %>%
-  filter(if (first(no_top_restricted)) share_level == min(share_level) else top_level == 1) %>%
-  ungroup()
+## Restricted legs read by the indicators (decision of 2 Nov 2026; rule in helpers.R): for each earmarked
+## instrument (no social contributions), its top-level restricted legs, or for the few with none, its restricted
+## legs at the shallowest share_level. Their number is reported in n_earmarked_no_top_restricted.
+indicator_legs <- get_indicator_legs(earmarks %>% filter(!social_contribution))
 
 ## Instruments with a top-level restricted leg where a minimum over share_level would have given other legs
 n_top_level_2 <- earmarks %>%
@@ -240,18 +232,10 @@ a1_instrument_shares <- instrument_indicators %>%
 
 ## Benefit link (DERIVED_TABLE_SPEC §3): unit = instrument × cofog_division over the selected restricted legs.
 ## Null benefit_link (cofog_division = unallocated: the function, and so the link, is unknown) is excluded.
-## A pair with several values takes the first in the test order of DERIVED_TABLE_SPEC §2.4, which is the
-## factor order set in 00_load.R.
-benefit_pairs <- indicator_legs %>%
-  filter(!is.na(benefit_link)) %>%
-  group_by(country, instrument_id, cofog_division) %>%
-  summarise(n_links = n_distinct(benefit_link),
-            benefit_link = levels(benefit_link)[min(as.integer(benefit_link))],
-            .groups = "drop")
-n_pairs_null <- indicator_legs %>%
-  group_by(country, instrument_id, cofog_division) %>%
-  summarise(all_null = all(is.na(benefit_link)), .groups = "drop") %>%
-  pull(all_null) %>% sum()
+## A pair with several values takes the first in the test order of DERIVED_TABLE_SPEC §2.4 (rule in helpers.R).
+link_pairs    <- get_link_pairs(indicator_legs)
+benefit_pairs <- link_pairs %>% filter(!is.na(benefit_link))
+n_pairs_null  <- sum(is.na(link_pairs$benefit_link))
 
 a1_benefit <- benefit_pairs %>%
   group_by(country) %>%

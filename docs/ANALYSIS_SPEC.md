@@ -15,7 +15,7 @@
   - The E-class is unaffected: it already reads every level (a general-budget or unrestricted leg at any level makes the instrument E2).
   - Deeper levels (`share_level ≥ 2`, 153 of 2,980 groups, 5%) are used as detail only: in A6 (territorial channels, where most sub-keys sit), and in one appendix line on how many groups have sub-keys and how many of those add a function absent from level 1. Report the number of E2 instruments whose only diverting leg is below their top level (40).
   - Shares are never compared or added across levels. An effective share (the product down the chain) is computed only when every parent share is stated.
-  - Instrument-level indicators of earmarked instruments (vehicle, commitment, benefit link) use the restricted legs at the shallowest level where the instrument has one. For all but 27 earmarked instruments (13 countries; social contributions excluded) this is the top level; the 27 have restricted legs only below it. Table A1 reports their number per country (`n_earmarked_no_top_restricted`).
+  - Instrument-level indicators of earmarked instruments (vehicle, commitment, benefit link) use the instrument's restricted top-level legs, the top level being defined per group. An instrument with no restricted top-level leg in any of its groups uses its restricted legs at the shallowest level where it has one: 27 earmarked instruments in 13 countries (social contributions excluded). Table A1 reports their number per country (`n_earmarked_no_top_restricted`).
 - **Class placeholders** (`row_kind = class_placeholder`, about 11% of instruments): one row standing for a class of charges the corpus does not enumerate. Use `row_kind` directly; no extra flag.
   - The instrument unit is labelled "instruments and classes of charges".
   - Main results are reported with and without placeholders.
@@ -57,12 +57,31 @@ Note for the text: the E1, E4 and E0 counts are incidental. They count only inst
 | # | Question | Exhibit | Unit | Main measure |
 |---|---|---|---|---|
 | A1 | How much earmarking, and where? | Dot plot of countries: E2 + E3 instruments and allocations, coloured by legal family | instrument | $n^{E}_c$; E3 share $= n^{E3}_c/n^{E}_c$; secondary: E1, E2 and E3 shares of $n^{A}_c$ |
-| A2 | What finances earmarks, and what do they finance? | **(a) Core heatmap** of `base_category` (grouped, about 10 rows) × COFOG division. Each cell shows the number of instrument–function links, labelled with the number of countries. **(b) Recipient-form shares.** **(c) One Sankey per country**, `base_category` → COFOG division, restricted legs, flows = number of links (not money). In the main text: 3–4 contrasting countries (e.g. one UEMOA, one CEMAC, one anglophone, one lusophone). All countries in an appendix of country profiles | instrument × division | link counts; country-equal shares |
+| A2 | What finances earmarks, and what do they finance? | **(a) Core heatmap** of `base_group` (12 rows, below) × COFOG division. Each cell shows the number of instrument–function links, labelled with the number of countries. **(b) Recipient-form shares.** **(c) One Sankey per country**, `base_group` → COFOG division, restricted legs, flows = number of links (not money). In the main text: 3–4 contrasting countries (e.g. one UEMOA, one CEMAC, one anglophone, one lusophone). All countries in an appendix of country profiles. **(d)** `instrument_type` (GFS) composition of earmarked instruments, country-equal and pooled (table): what kind of charges the counts are made of | instrument × division; (d) instrument | link counts; country-equal shares |
 | A3 | Is there an economic rationale? | Stacked bars of `benefit_link` (corrective / compensatory / benefit / sectoral / general_revenue / unlinked), overall and by legal family | instrument × division | share of links in each class |
 | A4 | How binding are earmarks? | Design table: E3 vs E2; `commitment_strength` (instrument maximum); vehicle; `legal_rank`; `determinacy` | instrument (commitment, E-class); allocation (vehicle, rank, determinacy) | country-equal shares |
 | A5 | Which earmarks are reform candidates? | Cross-table of benefit link × commitment strength. Highlight "unlinked or general revenue, and hard": rigid with no economic rationale | instrument × division | share of links in each cell |
 | A6 | Territorial and regional channels | Short subsection: derivation, equalization, subnational sharing; regional community levies (ECOWAS, UEMOA, CEMAC, SACU) | allocation | counts; country incidence |
 | A7 | Do legal traditions shape the design? | Groups: `design_group` (§0), which separates legal tradition from CFA harmonisation. Main contrasts: UEMOA and CEMAC vs non-CFA francophone (harmonisation within one tradition); non-CFA francophone vs anglophone (tradition outside the CFA zone). GNB, GNQ (CFA without the French tradition) and RWA, ETH (mixed) are labelled points, never group bars. **(a)** Recipient-form composition by group, read as legal forms as written (vehicle note below). **(b)** Design profile: E3 share, hard-commitment share, share enacted in finance laws, benefit-linked share, fund-or-agency share. Country dots with the group median and n; context columns: the country's share of finance-law documents in its corpus (`{ISO3}_corpus.csv`, `doc_type`) and `law_year_median`; with and without class placeholders. **(c)** One pre-specified check: country-level fractional logit of each design share on group dummies, `resource_group` and log documents, HC3 errors; read as an association | (a), (b) instrument and allocation (labelled); (c) country | country-level values; group medians |
+
+**Base groups** (`base_group`, added in `00_load.R`; used by A2a, A2c and A7). `base_category` records what is taxed; GFS (`instrument_type`) records the economic nature of the charge and is used in A2d and B1. Order as listed:
+
+| base_group | base_category |
+|---|---|
+| broad_bases | general_income, general_consumption, general_trade, general_revenue_class |
+| extractive | extractive_resources |
+| fuel_energy | fuel_energy |
+| forestry_fisheries_agriculture | forestry_wildlife_fisheries, agricultural_commodities |
+| environment_water | pollution_waste_environment, water |
+| telecom_media | telecom_ict_postal, media_advertising |
+| transport | motor_vehicles_road, air_maritime_rail_transport |
+| financial_insurance | financial_insurance |
+| harmful_consumption | harmful_consumption |
+| gambling_tourism | gambling_lotteries, tourism_hospitality |
+| payroll_property | payroll_employment, property_land, construction_urban |
+| services_acts_other | health_education_services, regulated_activities_professions, public_administrative_acts, persons, other_specific |
+
+harmful_consumption is its own row although small (35 earmarked instruments, 16 countries), because it is the corrective case readers look for.
 
 **Vehicle definitions** (allocation level, restricted legs):
 - *fund-or-agency vehicle* = `fund`, `agency`, `social_security_institution`, `non_government_body`;
